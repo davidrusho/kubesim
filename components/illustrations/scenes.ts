@@ -80,7 +80,7 @@ const apply: Scene = {
     { id: "etcd", x: 620, y: 232, w: 124, h: 40, label: "etcd", icon: "etcd", kind: "chip", parent: "cp" },
     { id: "w1", x: 10, y: 300, w: 828, h: 124, label: "Node worker-1", icon: "node", region: "node", parent: "cl" },
     { id: "kl", x: 24, y: 356, w: 124, h: 40, label: "kubelet", icon: "kubelet", kind: "chip", parent: "w1" },
-    { id: "unsched", x: 10, y: 436, w: 828, h: 106, label: "Pods without a Node (objects in the API)", region: "namespace", parent: "cl" },
+    { id: "unsched", x: 10, y: 436, w: 828, h: 106, label: "Pods without a Node (objects in the API)", region: "area", parent: "cl" },
     { id: "p1", x: 230, y: 470, w: 170, h: 60, label: "web-7c5d9-x7k2p", kind: "pod", parent: "unsched", status: "Pending", unbound: true },
     { id: "p2", x: 420, y: 470, w: 170, h: 60, label: "web-7c5d9-m4q8z", kind: "pod", parent: "unsched", status: "Pending", unbound: true },
     { id: "p3", x: 610, y: 470, w: 170, h: 60, label: "web-7c5d9-t9c6w", kind: "pod", parent: "unsched", status: "Pending", unbound: true },
@@ -293,6 +293,7 @@ const hpa: Scene = {
   title: "The autoscaling loop",
   width: 848,
   height: 368,
+  legend: true,
   boxes: [
     { id: "cl", x: 0, y: 0, w: 848, h: 360, label: "Kubernetes cluster", region: "cluster" },
     { id: "kubelet", x: 20, y: 250, w: 130, h: 40, label: "kubelets", icon: "kubelet", kind: "chip", parent: "cl" },
@@ -302,12 +303,12 @@ const hpa: Scene = {
     { id: "dep", x: 500, y: 150, w: 150, h: 52, label: "Deployment", sub: "replicas: 2 → 4", icon: "deploy", kind: "chip", parent: "ns" },
     { id: "p1", x: 690, y: 64, w: 130, h: 60, label: "Pod 1", kind: "pod", parent: "ns", status: "Running 90%" },
     { id: "p2", x: 690, y: 132, w: 130, h: 60, label: "Pod 2", kind: "pod", parent: "ns", status: "Running 90%" },
-    { id: "p3", x: 690, y: 200, w: 130, h: 60, label: "Pod 3", kind: "pod", parent: "ns", status: "Pending" },
-    { id: "p4", x: 690, y: 268, w: 130, h: 60, label: "Pod 4", kind: "pod", parent: "ns", status: "Pending" },
+    { id: "p3", x: 690, y: 200, w: 130, h: 60, label: "Pod 3", kind: "pod", parent: "ns", status: "Pending", unbound: true },
+    { id: "p4", x: 690, y: 268, w: 130, h: 60, label: "Pod 4", kind: "pod", parent: "ns", status: "Pending", unbound: true },
   ],
   edges: [
-    { id: "scrape", from: "kubelet", to: "ms", label: "usage" },
-    { id: "read", from: "ms", to: "hpa", label: "avg CPU" },
+    { id: "scrape", from: "ms", to: "kubelet", label: "usage", kind: "watch" },
+    { id: "read", from: "hpa", to: "ms", label: "avg CPU", kind: "watch" },
     { id: "scale", from: "hpa", to: "dep", label: "replicas" },
     { id: "d1", from: "dep", to: "p1", fromSide: "right", toSide: "left", elbow: true, bus: 665 },
     { id: "d2", from: "dep", to: "p2", fromSide: "right", toSide: "left", elbow: true, bus: 665 },
@@ -342,7 +343,7 @@ const rbac: Scene = {
   ],
   edges: [
     { id: "send", from: "req", to: "api", label: "who? what? where?", cross: "cl" },
-    { id: "look", from: "api", to: "rb", label: "find bindings" },
+    { id: "look", from: "api", to: "rb", label: "find bindings", kind: "watch" },
     { id: "subj", from: "rb", to: "sa", label: "subjects", kind: "owns" },
     { id: "ref", from: "rb", to: "role", label: "roleRef", kind: "owns" },
     { id: "csubj", from: "crb", to: "user", label: "subjects", kind: "owns" },
@@ -392,7 +393,7 @@ const staticPods: Scene = {
     { title: "The kubelet reads a directory", text: "Besides the Pods the API server hands out, a kubelet can run Pods from manifest files in a directory on its own Node. The kubelet's staticPodPath setting names that directory; the kubelet scans it periodically and creates or deletes these static Pods as files appear and disappear. On a kubeadm cluster the directory is /etc/kubernetes/manifests.", on: ["man", "kl", "watch"], flow: ["watch"], add: ["cl", "cp", "man", "kl", "watch"] },
     { title: "kubeadm runs the control plane this way", text: "kubeadm writes manifest files for etcd, kube-apiserver, kube-controller-manager and kube-scheduler into that directory, and the kubelet starts them. They are static Pods in the kube-system namespace.", on: ["kl", "p-api", "p-etcd", "p-sch", "p-cm", "s-api", "s-etcd", "s-sch", "s-cm"], flow: ["s-api", "s-etcd", "s-sch", "s-cm"], add: ["p-api", "p-etcd", "p-sch", "p-cm", "s-api", "s-etcd", "s-sch", "s-cm"] },
     { title: "Mirror Pods show them in the API", text: "For each static Pod the kubelet creates a mirror Pod in the API server, so kubectl get pods -n kube-system lists them. The mirror is only a view: if you delete it with kubectl, the kubelet doesn't remove the static Pod. To stop one, remove its manifest file.", on: ["m-api", "m-etcd", "m-sch", "m-cm", "mi-api", "mi-etcd", "mi-sch", "mi-cm"], add: ["ns", "m-api", "m-etcd", "m-sch", "m-cm", "mi-api", "mi-etcd", "mi-sch", "mi-cm"] },
-    { title: "When a manifest is wrong", text: "A component that can't start from its manifest leaves nothing running to inspect. If it was the API server, kubectl stops answering too, so look on the control-plane Node itself: the kubelet's own logs (journalctl -u kubelet) and crictl ps -a, which lists the containers the container runtime knows about. Then fix the file: the kubelet periodically scans the directory.", on: ["man", "p-api", "m-api"], off: ["p-api", "m-api"], status: { "p-api": "Not running", "m-api": "Unavailable" } },
+    { title: "When a manifest is wrong", text: "If the API server's container crashes or never starts, kubectl can't reach the API (API unreachable), so its mirror Pod is greyed out: the API can no longer tell you anything. Look on the control-plane Node itself: crictl ps -a lists every container the runtime knows about, with its state (a crashed one shows Exited), and journalctl -u kubelet shows the kubelet's own logs. Then fix the manifest: the kubelet periodically scans the directory.", on: ["man", "p-api"], off: ["p-api"], status: { "p-api": "Exited", "m-api": "" } },
   ],
 };
 
@@ -442,7 +443,7 @@ const scheduling: Scene = {
   boxes: [
     { id: "cl", x: 0, y: 0, w: 848, h: 392, label: "Kubernetes cluster", region: "cluster" },
     { id: "cp", x: 10, y: 34, w: 420, h: 104, label: "control-plane", icon: "control-plane", region: "node", parent: "cl" },
-    { id: "unsched", x: 470, y: 34, w: 368, h: 104, label: "Unscheduled: API objects, no Node yet", region: "namespace", parent: "cl" },
+    { id: "unsched", x: 470, y: 34, w: 368, h: 104, label: "Unscheduled: API objects, no Node yet", region: "area", parent: "cl" },
     { id: "api", x: 24, y: 64, w: 150, h: 40, label: "kube-apiserver", icon: "api", kind: "chip", parent: "cp" },
     { id: "sched", x: 250, y: 64, w: 150, h: 40, label: "scheduler", icon: "sched", kind: "chip", parent: "cp" },
     { id: "pend", x: 486, y: 64, w: 150, h: 60, label: "web-1", kind: "pod", parent: "unsched", status: "Pending", unbound: true },
@@ -460,7 +461,7 @@ const scheduling: Scene = {
     { id: "why", x: 480, y: 348, w: 350, h: 36, label: "kubectl describe pod big-1", kind: "chip", parent: "cl", tone: "amber" },
   ],
   edges: [
-    { id: "seen", from: "sched", to: "unsched", label: "finds" },
+    { id: "seen", from: "sched", to: "unsched", label: "finds", kind: "watch" },
     { id: "api-s", from: "sched", to: "api", label: "watch", kind: "watch" },
     { id: "bind", from: "sched", to: "ne", label: "bind", fromSide: "bottom", toSide: "top", elbow: true, bus: 154 },
   ],
@@ -533,7 +534,7 @@ const dns: Scene = {
     { id: "ans", from: "dsvc", to: "podr", label: "10.96.14.7", bend: -30 },
     { id: "d1", from: "dsvc", to: "c1", fromSide: "right", toSide: "left", elbow: true, bus: 665 },
     { id: "d2", from: "dsvc", to: "c2", fromSide: "right", toSide: "left", elbow: true, bus: 665 },
-    { id: "look", from: "c2", to: "web", label: "A record", kind: "owns" },
+    { id: "look", from: "c2", to: "web", label: "Services", kind: "watch" },
   ],
   steps: [
     { title: "Every Pod gets a resolv.conf", text: "The kubelet configures /etc/resolv.conf for each Pod. Its nameserver is the cluster's DNS Service, and its search list starts with the Pod's own namespace and the cluster's default domain.", on: ["podr", "r-ns", "r-s1", "r-s2"], add: ["cl", "nsd", "podr", "r-ns", "r-s1", "r-s2"] },

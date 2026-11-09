@@ -9,6 +9,13 @@ const WHERE: Record<string, { href: string; label: string }> = {
   architecture: { href: "/learn/first-pod", label: "Your first Pod" },
   apply: { href: "/learn/declarative-yaml", label: "Declarative YAML" },
   service: { href: "/learn/services", label: "Services & networking" },
+  probes: { href: "/learn/health-checks", label: "Health checks: readiness & liveness" },
+  ingress: { href: "/learn/ingress", label: "Ingress" },
+  "network-policy": { href: "/learn/network-policies", label: "Network policies" },
+  "pv-pvc": { href: "/learn/persistent-storage", label: "Persistent storage" },
+  hpa: { href: "/learn/autoscaling", label: "Autoscaling with the HPA" },
+  rbac: { href: "/learn/rbac", label: "RBAC & ServiceAccounts" },
+  scheduling: { href: "/learn/scheduling", label: "Scheduling: selectors, taints & drains" },
 };
 
 export function ConceptIndex() {

@@ -41,6 +41,7 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
       for (const id of s.add ?? []) expect(either(id), `${at} add ${id}`).toBe(true);
       for (const id of s.flow ?? []) expect(edges.has(id), `${at} flow ${id}`).toBe(true);
       for (const id of s.off ?? []) expect(boxes.has(id), `${at} off ${id}`).toBe(true);
+      for (const id of s.block ?? []) expect(edges.has(id), `${at} block ${id}`).toBe(true);
       for (const id of Object.keys(s.status ?? {})) expect(boxes.get(id)?.kind, `${at} status ${id}`).toBe("pod");
       for (const id of s.open ?? []) expect(boxes.get(id)?.containers?.length, `${at} open ${id}`).toBeGreaterThan(0);
     }
@@ -119,7 +120,8 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
 
   test("Pod statuses are words the drawing colours", () => {
     const words = [...scene.boxes.map((b) => b.status), ...scene.steps.flatMap((s) => Object.values(s.status ?? {}))];
-    for (const w of words) if (w) expect(statusTone(w), `status "${w}"`).not.toBe("idle");
+    // A version number ("v1.36") is a status too, drawn grey.
+    for (const w of words) if (w && !/^v\d/.test(w)) expect(statusTone(w), `status "${w}"`).not.toBe("idle");
   });
 
   // The new drawing styles are held to a layout standard the original boxes-and-arrows scenes were never written to.
@@ -141,6 +143,24 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
           if (b.id === e.from || b.id === e.to) continue;
           expect(curveHitsRect(g, closed(b)), `${e.id} runs through ${b.id}`).toBe(false);
         }
+      }
+    });
+
+    test("text fits inside its box (12px sans is about 6.6px a character, mono 7.2px)", () => {
+      const sans = (t?: string) => (t ? t.length * 6.6 : 0);
+      const mono = (t?: string) => (t ? t.length * 7.2 : 0);
+      for (const b of scene.boxes) {
+        if (b.group) continue;
+        const statuses = [b.status, ...scene.steps.map((st) => st.status?.[b.id])].filter(Boolean) as string[];
+        let need: number;
+        if (b.region) need = 10 + (b.icon ? 24 : 0) + sans(b.label) + (b.sub ? mono(b.sub) + 20 : 0) + 10;
+        else if (b.kind === "pod") need = Math.max(40 + sans(b.label) + 8, 16 + mono(b.sub) + 8, ...statuses.map((x) => 32 + sans(x)), ...(b.containers ?? []).map((c) => 28 + 8 + sans(c.name) + 8));
+        else if (b.kind === "chip" && b.icon && !b.sub && b.h >= 40) need = sans(b.label) + 12;
+        else if (b.kind === "chip" || b.outside) {
+          const x0 = b.icon ? (b.outside ? 38 : 26) : b.outside ? 12 : 0;
+          need = b.icon || b.outside ? x0 + Math.max(sans(b.label), mono(b.sub)) + 8 : Math.max(sans(b.label), mono(b.sub)) + 16;
+        } else continue;
+        expect(b.w, `${b.id} (${b.label}) needs about ${Math.round(need)}px`).toBeGreaterThanOrEqual(need);
       }
     });
 

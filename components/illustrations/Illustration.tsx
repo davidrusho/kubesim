@@ -36,6 +36,8 @@ export interface Box {
   icon?: string;
   /** Status word shown on a Pod: Running and Ready are green, Pending and ContainerCreating amber, failures red. */
   status?: string;
+  /** A Pod the scheduler has not yet placed. It must be drawn outside every Node region (the scene tests check). */
+  unbound?: boolean;
   /** A Pod's containers, shown as chips inside the card in steps that list the Pod under `open`. */
   containers?: { name: string; sub?: string }[];
   /** Height of the Pod card when it is open. `h` is the closed height. */

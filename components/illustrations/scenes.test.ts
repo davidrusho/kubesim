@@ -183,13 +183,21 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
   }
 });
 
-describe("an unscheduled Pod is not on a Node", () => {
-  test("in scheduling, a Pending Pod sits outside every Node region", () => {
-    const s = SCENES.scheduling;
-    const nodes = s.boxes.filter((b) => b.region === "node");
-    const pending = s.boxes.filter((b) => b.kind === "pod" && b.status === "Pending");
-    expect(pending.length).toBeGreaterThan(0);
-    for (const p of pending) for (const n of nodes) expect(containsRect(n, full(p)), `${p.id} is Pending but drawn inside ${n.id}`).toBe(false);
+describe("an unbound Pod is not on a Node", () => {
+  test("a Pod marked unbound is never inside a Node region, in any scene", () => {
+    let marked = 0;
+    for (const sc of Object.values(SCENES)) {
+      const nodes = sc.boxes.filter((b) => b.region === "node");
+      for (const p of sc.boxes.filter((b) => b.unbound)) {
+        marked++;
+        for (const n of nodes) expect(containsRect(n, full(p)), `${sc.id}: ${p.id} is unbound but drawn inside ${n.id}`).toBe(false);
+      }
+    }
+    expect(marked).toBeGreaterThan(0);
+  });
+
+  test("scheduling and pv-pvc show their Pod unbound before it is placed", () => {
+    for (const id of ["scheduling", "pv-pvc"]) expect(SCENES[id].boxes.some((b) => b.unbound && b.kind === "pod"), id).toBe(true);
   });
 });
 

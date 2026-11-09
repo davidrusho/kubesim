@@ -227,18 +227,21 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
       }
     });
 
-    test("a Pod marked unbound sits outside every Node until a move puts it on one, and stays there", () => {
+    test("a Pod that a step moves onto a Node, or that is Pending outside one, is marked unbound; an unbound Pod stays off every Node until it is moved", () => {
       const nodes = scene.boxes.filter((b) => b.region === "node");
-      for (const p of scene.boxes.filter((b) => b.unbound)) {
+      const isNode = (id?: string) => !!id && nodes.some((n) => n.id === id);
+      const movedOnto = new Set(scene.steps.flatMap((st) => Object.entries(st.move ?? {}).filter(([, m]) => isNode(m.parent)).map(([id]) => id)));
+      for (const p of scene.boxes.filter((b) => b.kind === "pod")) {
+        const pending = steps(scene).some(({ R }) => R.shown(p.id) && /^pending/i.test(R.byId.get(p.id)!.status ?? "") && !nodes.some((n) => containsRect(n, full(R.byId.get(p.id)!))));
+        if (movedOnto.has(p.id) || pending) expect(p.unbound, `${p.id} is ${movedOnto.has(p.id) ? "moved onto a Node" : "Pending outside every Node"}, so it needs unbound: true`).toBe(true);
+        if (!p.unbound) continue;
         let placed = false;
         for (const { i, R } of steps(scene)) {
           if (!R.shown(p.id)) continue;
           const now = R.byId.get(p.id)!;
-          const inNode = nodes.some((n) => containsRect(n, full(now)));
-          const touchesNode = nodes.some((n) => rectsOverlap(n, full(now)));
-          if (now.parent && nodes.some((n) => n.id === now.parent)) placed = true;
-          if (!placed) expect(touchesNode, `step ${i + 1}: ${p.id} is unbound but overlaps a Node`).toBe(false);
-          if (placed) expect(inNode, `step ${i + 1}: ${p.id} is placed on a Node but is not inside it`).toBe(true);
+          if (isNode(now.parent)) placed = true;
+          if (!placed) expect(nodes.some((n) => rectsOverlap(n, full(now))), `step ${i + 1}: ${p.id} is unbound but overlaps a Node`).toBe(false);
+          if (placed) expect(nodes.some((n) => containsRect(n, full(now))), `step ${i + 1}: ${p.id} is placed on a Node but is not inside it`).toBe(true);
           // A Pod whose containers are starting or running has been scheduled.
           if (/^(containercreating|running)/i.test(now.status ?? "")) expect(placed, `step ${i + 1}: ${p.id} is ${now.status} but not on a Node`).toBe(true);
         }
@@ -267,6 +270,16 @@ describe("the converted scenes use the new capabilities", () => {
       expect(s.edges.some((e) => e.cross)).toBe(true);
     }
     expect(SCENES.service.edges.some((e) => e.kind === "owns")).toBe(true);
+  });
+
+  test("apply, scheduling and pv-pvc each move a Pod onto a Node, and flag it unbound", () => {
+    for (const id of ["apply", "scheduling", "pv-pvc"]) {
+      const sc = SCENES[id];
+      const nodeIds = new Set(sc.boxes.filter((b) => b.region === "node").map((b) => b.id));
+      const moved = sc.steps.flatMap((st) => Object.entries(st.move ?? {}).filter(([, m]) => m.parent && nodeIds.has(m.parent)).map(([pid]) => pid));
+      expect(moved.length, `${id} moves no Pod onto a Node`).toBeGreaterThan(0);
+      for (const pid of moved) expect(sc.boxes.find((b) => b.id === pid)?.unbound, `${id}: ${pid}`).toBe(true);
+    }
   });
 
   test("the Kubernetes icon licence and attribution ship with the icons", () => {

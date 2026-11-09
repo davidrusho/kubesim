@@ -386,7 +386,7 @@ const staticPods: Scene = {
     { title: "The kubelet reads a directory", text: "Besides the Pods the API server hands out, a kubelet can run Pods from manifest files in a directory on its own Node. The kubelet's staticPodPath setting names that directory, and the kubelet periodically scans it, creating and deleting these static Pods as files appear and disappear. On a kubeadm cluster the directory is /etc/kubernetes/manifests.", on: ["man", "kl", "watch"], flow: ["watch"], add: ["cl", "cp", "man", "kl", "watch"] },
     { title: "kubeadm runs the control plane this way", text: "kubeadm writes manifest files for etcd, kube-apiserver, kube-controller-manager and kube-scheduler into that directory, and the kubelet starts them. They are static Pods in the kube-system namespace.", on: ["kl", "p-api", "p-etcd", "p-sch", "p-cm", "s-api", "s-etcd", "s-sch", "s-cm"], flow: ["s-api", "s-etcd", "s-sch", "s-cm"], add: ["p-api", "p-etcd", "p-sch", "p-cm", "s-api", "s-etcd", "s-sch", "s-cm"] },
     { title: "Mirror Pods show them in the API", text: "For each static Pod the kubelet creates a mirror Pod in the API server, so kubectl get pods -n kube-system lists them. The mirror is only a view: if you delete it with kubectl, the kubelet doesn't remove the static Pod. To stop one, remove its manifest file.", on: ["m-api", "m-etcd", "m-sch", "m-cm", "mi-api", "mi-etcd", "mi-sch", "mi-cm"], add: ["ns", "m-api", "m-etcd", "m-sch", "m-cm", "mi-api", "mi-etcd", "mi-sch", "mi-cm"] },
-    { title: "When a manifest is wrong", text: "A component that can't start from its manifest leaves nothing running to inspect. If it was the API server, kubectl stops answering too, so look on the control-plane Node itself: the kubelet's own logs (journalctl -u kubelet) and crictl ps -a, which lists the containers the container runtime knows about. Then fix the file: the kubelet periodically scans the directory.", on: ["man", "p-api", "m-api"], off: ["p-api", "m-api"] },
+    { title: "When a manifest is wrong", text: "A component that can't start from its manifest leaves nothing running to inspect. If it was the API server, kubectl stops answering too, so look on the control-plane Node itself: the kubelet's own logs (journalctl -u kubelet) and crictl ps -a, which lists the containers the container runtime knows about. Then fix the file: the kubelet periodically scans the directory.", on: ["man", "p-api", "m-api"], off: ["p-api", "m-api"], status: { "p-api": "Not running", "m-api": "Unavailable" } },
   ],
 };
 
@@ -433,11 +433,12 @@ const scheduling: Scene = {
   height: 388,
   boxes: [
     { id: "cl", x: 0, y: 0, w: 848, h: 380, label: "Kubernetes cluster", region: "cluster" },
-    { id: "cp", x: 10, y: 34, w: 828, h: 104, label: "control-plane", icon: "control-plane", region: "node", parent: "cl" },
+    { id: "cp", x: 10, y: 34, w: 420, h: 104, label: "control-plane", icon: "control-plane", region: "node", parent: "cl" },
+    { id: "unsched", x: 440, y: 34, w: 398, h: 104, label: "Unscheduled: API objects, no Node yet", region: "namespace", parent: "cl" },
     { id: "api", x: 24, y: 64, w: 150, h: 40, label: "kube-apiserver", icon: "api", kind: "chip", parent: "cp" },
     { id: "sched", x: 250, y: 64, w: 150, h: 40, label: "scheduler", icon: "sched", kind: "chip", parent: "cp" },
-    { id: "pend", x: 480, y: 64, w: 150, h: 60, label: "web-1", kind: "pod", parent: "cp", status: "Pending" },
-    { id: "big", x: 680, y: 64, w: 150, h: 60, label: "big-1", kind: "pod", parent: "cp", status: "Pending" },
+    { id: "pend", x: 456, y: 64, w: 150, h: 60, label: "web-1", kind: "pod", parent: "unsched", status: "Pending" },
+    { id: "big", x: 660, y: 64, w: 150, h: 60, label: "big-1", kind: "pod", parent: "unsched", status: "Pending" },
     { id: "na", x: 10, y: 170, w: 158, h: 150, label: "node-a", icon: "node", region: "node", parent: "cl" },
     { id: "nb", x: 177, y: 170, w: 158, h: 150, label: "node-b", icon: "node", region: "node", parent: "cl" },
     { id: "nc", x: 344, y: 170, w: 158, h: 150, label: "node-c", icon: "node", region: "node", parent: "cl" },
@@ -457,7 +458,7 @@ const scheduling: Scene = {
     { id: "bind", from: "sched", to: "ne", label: "bind", fromSide: "bottom", toSide: "top", elbow: true, bus: 154 },
   ],
   steps: [
-    { title: "A Pod waits for a Node", text: "A new Pod has no Node yet. The kube-scheduler looks for Pods not yet bound to a node and assigns each to a suitable node. This Pod, web-1, asks for 1 CPU and for a Node labelled disk=ssd, and tolerates no taints.", on: ["sched", "pend", "seen", "api-s"], flow: ["seen", "api-s"], add: ["cl", "cp", "api", "sched", "pend", "seen", "api-s"] },
+    { title: "A Pod waits for a Node", text: "A new Pod has no Node yet. The kube-scheduler looks for Pods not yet bound to a node and assigns each to a suitable node. This Pod, web-1, asks for 1 CPU and for a Node labelled disk=ssd, and tolerates no taints.", on: ["sched", "pend", "seen", "api-s"], flow: ["seen", "api-s"], add: ["cl", "cp", "unsched", "api", "sched", "pend", "seen", "api-s"] },
     { title: "Filter: which Nodes could run it?", text: "The filtering step finds the set of Nodes where it's feasible to schedule the Pod. For example, a resources filter checks whether a candidate Node has enough available resources for the Pod's requests. Here node-a lacks the disk=ssd label, node-b has a taint the Pod doesn't tolerate, and node-c has only 0.5 CPU free.", on: ["nd", "ne", "cd", "ce", "pend"], off: ["ca", "cb", "cc"], add: ["na", "nb", "nc", "nd", "ne", "ca", "cb", "cc", "cd", "ce"] },
     { title: "Score: which is best?", text: "In the scoring step, the scheduler ranks the remaining Nodes to choose the most suitable placement. It gives each Node that survived filtering a score based on the active scoring rules. node-d and node-e both fit; node-e has the most free CPU.", on: ["cd", "ce", "nd", "ne"] },
     { title: "Bind", text: "Finally, the scheduler assigns the Pod to the Node with the highest ranking; if several tie, it picks one at random. It records the choice through the API server, and the kubelet on that Node starts the Pod.", on: ["sched", "bind", "ne", "run"], flow: ["bind"], off: ["pend"], add: ["run", "bind"] },

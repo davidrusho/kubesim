@@ -183,6 +183,16 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
   }
 });
 
+describe("an unscheduled Pod is not on a Node", () => {
+  test("in scheduling, a Pending Pod sits outside every Node region", () => {
+    const s = SCENES.scheduling;
+    const nodes = s.boxes.filter((b) => b.region === "node");
+    const pending = s.boxes.filter((b) => b.kind === "pod" && b.status === "Pending");
+    expect(pending.length).toBeGreaterThan(0);
+    for (const p of pending) for (const n of nodes) expect(containsRect(n, full(p)), `${p.id} is Pending but drawn inside ${n.id}`).toBe(false);
+  });
+});
+
 describe("the converted scenes use the new capabilities", () => {
   test("architecture and service nest Pods inside Nodes inside the cluster, with actors outside", () => {
     for (const id of ["architecture", "service"]) {

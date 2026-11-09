@@ -15,7 +15,7 @@ export function statusTone(status: string | undefined): StatusTone {
   if (/^running\s+0\//i.test(status)) return "warn";
   if (/^(running|ready|bound|active|available|healthy|succeeded|complete)/i.test(status)) return "ok";
   if (/^(pending|containercreating|podinitializing|init|starting|terminating|waiting|unknown)/i.test(status)) return "warn";
-  if (/^(crashloop|error|err|failed|failing|imagepull|oomkilled|evicted|notready|not ready|unhealthy|unschedulable)/i.test(status)) return "bad";
+  if (/^(crashloop|error|err|failed|failing|exited|not running|unavailable|imagepull|oomkilled|evicted|notready|not ready|unhealthy|unschedulable)/i.test(status)) return "bad";
   return "idle";
 }
 

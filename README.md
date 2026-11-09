@@ -153,6 +153,8 @@ Lessons, Explainers, Concept Illustrations and engine fixes are all welcome. See
 
 [MIT](LICENSE)
 
+The Kubernetes icons in `public/icons/k8s/` are © The Kubernetes Authors, used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see [NOTICE.md](NOTICE.md).
+
 ## Trademarks
 
 Kubernetes® is a registered trademark of The Linux Foundation. CKA™ and CKAD™ are trademarks of The Linux Foundation. kubesim is not affiliated with or endorsed by The Linux Foundation or the CNCF, and its practice exams are not the real exams.

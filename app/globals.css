@@ -290,7 +290,10 @@ body {
 /* A box or edge a step introduces fades in. */
 @keyframes ill-add { from { opacity: 0; } }
 .ill-add { animation: ill-add 0.5s ease-out both; }
-@media (prefers-reduced-motion: reduce) { .ill-t, .ill-t path, .ill-t rect { transition: none; } .ill-add { animation: none; } .ill-packet { display: none; } }
+/* A box a step moves slides there; its edges follow where the browser can animate a path. */
+.ill-mv { transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+.ill-t path { transition: stroke 0.35s, stroke-width 0.35s, d 0.6s cubic-bezier(0.22, 1, 0.36, 1); }
+@media (prefers-reduced-motion: reduce) { .ill-t, .ill-t path, .ill-t rect { transition: none; } .ill-add { animation: none; } .ill-mv, .ill-t path { transition: none; } .ill-packet { display: none; } }
 
 /* Reduced motion: no transitions anywhere, including inline ones (pan/zoom, Pods sliding between slots). */
 @media (prefers-reduced-motion: reduce) {

@@ -25,8 +25,8 @@ export interface Box {
   tone?: Tone;
   /** A container drawn behind other boxes (e.g. a Node). */
   group?: boolean;
-  /** A tinted region with a header strip: the cluster, a Node, a namespace. Regions nested inside others are drawn darker. */
-  region?: "cluster" | "node" | "namespace" | "pod";
+  /** A tinted region with a header strip: the cluster, a Node, a namespace, a Pod. "area" is a plain dashed grouping with no strip or icon (for example Pods that have no Node yet). Regions nested inside others are drawn darker. */
+  region?: "cluster" | "node" | "namespace" | "pod" | "area";
   /** Id of the region this box sits in. Checked by the scene tests; drawing uses x/y/w/h only. */
   parent?: string;
   /** How to draw a box that is not a region: a Pod card (status bar and badge) or a small component chip. */
@@ -153,7 +153,7 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
   const legend = scene.legend
     ? [
         visEdges.some((e) => kindOf(e) === "traffic") && { k: "traffic", text: "traffic" },
-        visEdges.some((e) => kindOf(e) === "watch") && { k: "watch", text: "watches (arrow points at what is watched)" },
+        visEdges.some((e) => kindOf(e) === "watch") && { k: "watch", text: "watches or reads (arrow points at what is read)" },
         visEdges.some((e) => kindOf(e) === "owns") && { k: "owns", text: "owns or refers to" },
         visEdges.some((e) => kindOf(e) === "blocked") && { k: "blocked", text: "blocked" },
         visEdges.some((e) => e.cross) && { k: "cross", text: "crosses the cluster boundary" },
@@ -185,14 +185,15 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
 
           {regions.map((b) => {
             const ns = b.region === "namespace";
+            const area = b.region === "area";
             const d = depth(b);
             const r = b.region === "cluster" ? 14 : 10;
             const active = on.has(b.id);
             const eb = rectOf(b);
             return (
               <g key={b.id} className={isNew(b.id) ? "ill-t ill-add" : "ill-t"}>
-                <rect x={eb.x} y={eb.y} width={eb.w} height={eb.h} rx={r} fill={ns ? "var(--ill-ns-fill)" : `rgb(var(--ink-rgb) / ${0.035 + 0.05 * d})`} stroke={active ? INK : ns ? NS : LINE} strokeWidth={active ? 1.8 : ns ? 1.5 : 1.2} strokeDasharray={ns ? "7 4" : undefined} />
-                {!ns && <path d={`M${b.x},${b.y + STRIP} V${b.y + r} a${r},${r} 0 0 1 ${r},${-r} H${b.x + b.w - r} a${r},${r} 0 0 1 ${r},${r} V${b.y + STRIP} z`} fill={`rgb(var(--ink-rgb) / ${0.05 + 0.05 * d})`} />}
+                <rect x={eb.x} y={eb.y} width={eb.w} height={eb.h} rx={r} fill={ns ? "var(--ill-ns-fill)" : area ? "var(--ill-wash)" : `rgb(var(--ink-rgb) / ${0.035 + 0.05 * d})`} stroke={active ? INK : ns ? NS : LINE} strokeWidth={active ? 1.8 : ns ? 1.5 : 1.2} strokeDasharray={ns ? "7 4" : area ? "3 4" : undefined} />
+                {!ns && !area && <path d={`M${b.x},${b.y + STRIP} V${b.y + r} a${r},${r} 0 0 1 ${r},${-r} H${b.x + b.w - r} a${r},${r} 0 0 1 ${r},${r} V${b.y + STRIP} z`} fill={`rgb(var(--ink-rgb) / ${0.05 + 0.05 * d})`} />}
               </g>
             );
           })}
@@ -213,7 +214,7 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
               const lw = e.label ? e.label.length * fs * 0.6 + 12 : 0;
               return (
                 <g key={e.id} className={isNew(e.id) ? "ill-t ill-add" : "ill-t"} opacity={lit(e.id) ? 1 : dim - 0.05}>
-                  <path id={`${pre}-${e.id}`} d={d} fill="none" stroke={stroke} strokeWidth={active ? 2 : owns || bad ? 1.5 : watch ? 1.8 : 1.2} strokeDasharray={owns ? "5 4" : bad ? "4 3" : watch ? "1.5 3.5" : undefined} strokeLinecap={watch ? "round" : undefined} markerEnd={`url(#arr-${pre})`} />
+                  <path id={`${pre}-${e.id}`} d={d} style={{ d: `path("${d}")` }} fill="none" stroke={stroke} strokeWidth={active ? 2 : owns || bad ? 1.5 : watch ? 1.8 : 1.2} strokeDasharray={owns ? "5 4" : bad ? "4 3" : watch ? "1.5 3.5" : undefined} strokeLinecap={watch ? "round" : undefined} markerEnd={`url(#arr-${pre})`} />
                   {bad && (
                     <g stroke="var(--ill-bad)" strokeWidth={2} strokeLinecap="round">
                       <circle cx={g.mid.x} cy={g.mid.y} r={9} fill={PAPER} />
@@ -244,7 +245,7 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
           {regions.map((b) => (
             <g key={b.id} className={isNew(b.id) ? "ill-t ill-add" : "ill-t"}>
               <Icon name={b.icon} x={b.x + 10} y={b.y + 4} size={18} />
-              <text x={b.x + 10 + (b.icon ? 24 : 0)} y={b.y + 18} fill={b.region === "namespace" ? "var(--ill-ns-text)" : INK} stroke={PAPER} strokeWidth={4} strokeLinejoin="round" paintOrder="stroke" style={{ fontSize: 12, fontWeight: 600 }}>
+              <text x={b.x + 10 + (b.icon ? 24 : 0)} y={b.y + 18} fill={b.region === "namespace" ? "var(--ill-ns-text)" : b.region === "area" ? SOFT : INK} stroke={PAPER} strokeWidth={4} strokeLinejoin="round" paintOrder="stroke" style={{ fontSize: 12, fontWeight: 600 }}>
                 {b.label}
               </text>
               {b.sub && (
@@ -257,7 +258,11 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
 
           {boxes
             .filter((b) => !b.group && !b.region && shown(b.id))
-            .map((b) => {
+            .map((b0) => {
+              // Drawn where the scene first puts it, then slid to where this step has it (a CSS transition, so a moved Pod glides).
+              const ob = scene.boxes.find((x) => x.id === b0.id)!;
+              const b = { ...b0, x: ob.x, y: ob.y };
+              const el = (() => {
               const t = TONES[b.tone ?? "slate"];
               const active = on.has(b.id);
               const isOff = off.has(b.id);
@@ -359,6 +364,12 @@ export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; cla
                     </text>
                   )}
                   {isOff && <path d={`M${b.x + b.w - 16},${b.y + 8} l8,8 M${b.x + b.w - 8},${b.y + 8} l-8,8`} stroke="var(--color-red-700)" strokeWidth={1.6} strokeLinecap="round" />}
+                </g>
+              );
+              })();
+              return (
+                <g key={b0.id} className="ill-mv" style={{ transform: `translate(${b0.x - ob.x}px, ${b0.y - ob.y}px)` }}>
+                  {el}
                 </g>
               );
             })}

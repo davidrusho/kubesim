@@ -92,7 +92,7 @@ export function sceneView(scene: Scene): { top: number; bottom: number } {
         bottom = Math.max(bottom, r.rectOf(b).y + r.rectOf(b).h);
       });
     });
-    v = { top: Math.max(0, top - 8), bottom: bottom + 8 + (scene.legend ? 4 + LEGEND_H : 0) };
+    v = { top: Math.max(0, top - 8), bottom: bottom + 8 + (scene.legend && scene.edges.length > 0 ? 4 + LEGEND_H : 0) };
   }
   views.set(scene, v);
   return v;

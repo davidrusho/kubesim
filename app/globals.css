@@ -32,6 +32,20 @@
   --ill-green-line: rgb(21 128 61 / 0.55);
   --ill-amber-line: rgb(180 83 9 / 0.55);
   --ill-red-line: rgb(185 28 28 / 0.55);
+  /* Pod status (bar, badge fill, badge text), and the namespace / ownership violet. */
+  --ill-ok: #2f9e44;
+  --ill-ok-soft: #e7f6ec;
+  --ill-ok-text: #166534;
+  --ill-warn: #d97706;
+  --ill-warn-soft: #fff4db;
+  --ill-warn-text: #8a4b08;
+  --ill-bad: #dc2626;
+  --ill-bad-soft: #fef2f2;
+  --ill-bad-text: #b91c1c;
+  --ill-ns-line: rgb(124 58 237 / 0.7);
+  --ill-ns-on: #6d28d9;
+  --ill-ns-fill: rgb(124 58 237 / 0.045);
+  --ill-ns-text: #5b21b6;
 }
 .dark {
   --ink-rgb: 237 237 237;
@@ -44,6 +58,19 @@
   --ill-green-line: rgb(74 222 128 / 0.5);
   --ill-amber-line: rgb(251 191 36 / 0.5);
   --ill-red-line: rgb(248 113 113 / 0.5);
+  --ill-ok: #4ade80;
+  --ill-ok-soft: rgb(74 222 128 / 0.14);
+  --ill-ok-text: #86efac;
+  --ill-warn: #fbbf24;
+  --ill-warn-soft: rgb(251 191 36 / 0.14);
+  --ill-warn-text: #fcd34d;
+  --ill-bad: #f87171;
+  --ill-bad-soft: rgb(248 113 113 / 0.14);
+  --ill-bad-text: #fca5a5;
+  --ill-ns-line: rgb(167 139 250 / 0.75);
+  --ill-ns-on: #c4b5fd;
+  --ill-ns-fill: rgb(167 139 250 / 0.06);
+  --ill-ns-text: #c4b5fd;
 }
 
 /* Dark: the same tokens, re-pointed. Status shades flip too, so "bg-red-50 text-red-700" stays a quiet tint with readable text. */
@@ -260,7 +287,10 @@ body {
 /* Concept Illustrations */
 .ill-t { transition: opacity 0.45s ease; }
 .ill-t path, .ill-t rect { transition: stroke 0.35s, stroke-width 0.35s; }
-@media (prefers-reduced-motion: reduce) { .ill-t, .ill-t path, .ill-t rect { transition: none; } .ill-packet { display: none; } }
+/* A box or edge a step introduces fades in. */
+@keyframes ill-add { from { opacity: 0; } }
+.ill-add { animation: ill-add 0.5s ease-out both; }
+@media (prefers-reduced-motion: reduce) { .ill-t, .ill-t path, .ill-t rect { transition: none; } .ill-add { animation: none; } .ill-packet { display: none; } }
 
 /* Reduced motion: no transitions anywhere, including inline ones (pan/zoom, Pods sliding between slots). */
 @media (prefers-reduced-motion: reduce) {

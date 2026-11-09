@@ -1,11 +1,15 @@
 "use client";
 
-// Step-through Concept Illustration. A scene is a set of boxes (optionally
-// grouped) and edges; each step highlights some of them, animates packets
-// along "flow" edges, and shows a caption. Contributors add a scene in
-// ./scenes.ts and register it; nothing here needs to change.
+// Step-through Concept Illustration. A scene is a set of boxes and edges; each
+// step highlights some of them, animates packets along "flow" edges, and shows
+// a caption. Boxes can be nested regions (cluster, Node, namespace), Pod cards
+// with a status, small component chips, or actors outside the cluster. A step
+// can also introduce boxes (`add`) so the picture builds up. Contributors add a
+// scene in ./scenes.ts and register it; nothing here needs to change.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { crossing, edgePath, insideRect, type Pt, type Rect, type Side } from "./geometry";
+import { ICON_DIR, statusTone, type StatusTone } from "./shared";
 
 export type Tone = "slate" | "violet" | "blue" | "green" | "amber" | "red";
 
@@ -20,6 +24,22 @@ export interface Box {
   tone?: Tone;
   /** A container drawn behind other boxes (e.g. a Node). */
   group?: boolean;
+  /** A tinted region with a header strip: the cluster, a Node, a namespace. Regions nested inside others are drawn darker. */
+  region?: "cluster" | "node" | "namespace";
+  /** Id of the region this box sits in. Checked by the scene tests; drawing uses x/y/w/h only. */
+  parent?: string;
+  /** How to draw a box that is not a region: a Pod card (status bar and badge) or a small component chip. */
+  kind?: "pod" | "chip";
+  /** An actor outside the cluster (you with kubectl, a load balancer, a registry). Must lie outside the cluster region. */
+  outside?: boolean;
+  /** Name of an official Kubernetes icon in public/icons/k8s/, without `.svg`. Optional. */
+  icon?: string;
+  /** Status word shown on a Pod: Running and Ready are green, Pending and ContainerCreating amber, failures red. */
+  status?: string;
+  /** A Pod's containers, shown as chips inside the card in steps that list the Pod under `open`. */
+  containers?: { name: string; sub?: string }[];
+  /** Height of the Pod card when it is open. `h` is the closed height. */
+  openH?: number;
 }
 
 export interface Edge {
@@ -29,6 +49,17 @@ export interface Edge {
   label?: string;
   /** Bend the line by this many px (perpendicular). */
   bend?: number;
+  /** "traffic" (default): a solid line. "owns": a dashed line for logical ownership (Deployment owns ReplicaSet owns Pods). */
+  kind?: "traffic" | "owns";
+  /** Id of a region this edge enters or leaves: a marker is drawn where it crosses the region's boundary. */
+  cross?: string;
+  /** Leave the `from` box / enter the `to` box at the middle of this side, instead of along the line between their centres. */
+  fromSide?: Side;
+  toSide?: Side;
+  /** Route with right angles (needs both sides): several edges from one box then share a bus line, like an org chart. */
+  elbow?: boolean;
+  /** Where the elbow's middle run sits (a y for down-across-down), so edges from one box share it. */
+  bus?: number;
 }
 
 export interface Step {
@@ -40,6 +71,12 @@ export interface Step {
   flow?: string[];
   /** Boxes shown with an ✕ (e.g. a not-ready Pod). */
   off?: string[];
+  /** Boxes and edges that appear from this step on. Anything no step adds is always drawn. */
+  add?: string[];
+  /** Set a box's status from this step on, e.g. { "web-2": "Running" }. */
+  status?: Record<string, string>;
+  /** Pods drawn open (showing their containers) in this step only. */
+  open?: string[];
 }
 
 export interface Scene {
@@ -66,34 +103,25 @@ const TONES: Record<Tone, { fill: string; stroke: string; text: string; sub: str
   amber: { fill: PAPER, stroke: "var(--ill-amber-line)", text: INK, sub: "var(--color-amber-700)", on: "var(--color-amber-700)" },
   red: { fill: PAPER, stroke: "var(--ill-red-line)", text: INK, sub: "var(--color-red-700)", on: "var(--color-red-700)" },
 };
+const NS = "var(--ill-ns-line)";
+const STATUS: Record<StatusTone, { bar: string; soft: string; text: string }> = {
+  ok: { bar: "var(--ill-ok)", soft: "var(--ill-ok-soft)", text: "var(--ill-ok-text)" },
+  warn: { bar: "var(--ill-warn)", soft: "var(--ill-warn-soft)", text: "var(--ill-warn-text)" },
+  bad: { bar: "var(--ill-bad)", soft: "var(--ill-bad-soft)", text: "var(--ill-bad-text)" },
+  idle: { bar: LINE, soft: "var(--ill-fill-6)", text: SOFT },
+};
+const STRIP = 26;
+const MONO = "var(--font-geist-mono)";
 
-type Pt = { x: number; y: number };
-
-/** Point where the ray from a box's centre towards `to` leaves the box. */
-function exit(b: Box, to: Pt): Pt {
-  const c = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-  const dx = to.x - c.x;
-  const dy = to.y - c.y;
-  const sx = dx === 0 ? Infinity : b.w / 2 / Math.abs(dx);
-  const sy = dy === 0 ? Infinity : b.h / 2 / Math.abs(dy);
-  const s = Math.min(sx, sy);
-  return { x: c.x + dx * s, y: c.y + dy * s };
+/** The icon, if the box names one. */
+function Icon({ name, x, y, size }: { name?: string; x: number; y: number; size: number }) {
+  if (!name) return null;
+  return <image href={`${ICON_DIR}${name}.svg`} x={x} y={y} width={size} height={size} aria-hidden />;
 }
 
-function edgePath(a: Box, b: Box, bend = 0): { d: string; mid: Pt } {
-  const ca = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
-  const cb = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-  const p = exit(a, cb);
-  const q = exit(b, ca);
-  const len = Math.hypot(q.x - p.x, q.y - p.y) || 1;
-  const nx = -(q.y - p.y) / len;
-  const ny = (q.x - p.x) / len;
-  const m = { x: (p.x + q.x) / 2 + nx * bend, y: (p.y + q.y) / 2 + ny * bend };
-  // Pull the end back a little so the arrowhead sits outside the box.
-  const back = 4;
-  const ex = q.x - ((q.x - m.x) / (Math.hypot(q.x - m.x, q.y - m.y) || 1)) * back;
-  const ey = q.y - ((q.y - m.y) / (Math.hypot(q.x - m.x, q.y - m.y) || 1)) * back;
-  return { d: `M${p.x},${p.y} Q${m.x},${m.y} ${ex},${ey}`, mid: { x: (p.x + 2 * m.x + q.x) / 4, y: (p.y + 2 * m.y + q.y) / 4 } };
+/** Closed or open, a Pod card is as tall as the step says. */
+function drawn(b: Box, open: boolean): Rect {
+  return { x: b.x, y: b.y, w: b.w, h: open && b.openH ? b.openH : b.h };
 }
 
 /** The scene's drawing for one step. */
@@ -102,10 +130,27 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
   const on = new Set(step.on);
   const off = new Set(step.off ?? []);
   const flow = new Set(step.flow ?? []);
+  const open = new Set(step.open ?? []);
+  // A scene may build up: ids a step lists under `add` appear from that step on. Anything no step adds is always there.
+  const addedAt = new Map<string, number>();
+  scene.steps.forEach((s, k) => s.add?.forEach((id) => addedAt.has(id) || addedAt.set(id, k)));
+  const shown = (id: string) => (addedAt.get(id) ?? 0) <= i;
+  const isNew = (id: string) => addedAt.get(id) === i;
+  const status = new Map<string, string>();
+  scene.boxes.forEach((b) => b.status && status.set(b.id, b.status));
+  scene.steps.slice(0, i + 1).forEach((s) => Object.entries(s.status ?? {}).forEach(([id, v]) => status.set(id, v)));
   const byId = new Map(scene.boxes.map((b) => [b.id, b]));
-  const lit = (id: string) => on.size === 0 || on.has(id);
+  const rectOf = (b: Box): Rect => drawn(b, open.has(b.id));
+  const lit = (id: string) => on.size === 0 || on.has(id) || isNew(id);
+  // Sizes are authored for a drawing that fills the 848px Concepts column; a narrower viewBox keeps its original 10px labels.
+  const unit = scene.width / 848;
+  const fs = unit >= 1 ? 12 * unit : 10;
+  // Scenes drawn for the full column keep their dimmed parts readable (text stays legible at 12px).
+  const dim = unit >= 1 ? 0.55 : 0.35;
   // The same scene can be drawn twice (inline and enlarged): keep marker/path ids unique.
   const pre = `${scene.id}${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const regions = scene.boxes.filter((b) => b.region && shown(b.id)).sort((a, b) => b.w * b.h - a.w * a.h);
+  const depth = (b: Box) => regions.filter((r) => r !== b && insideRect(r, { x: b.x + 1, y: b.y + 1 }) && b.x + b.w <= r.x + r.w + 0.5 && b.y + b.h <= r.y + r.h + 0.5).length;
   return (
     <svg viewBox={`0 0 ${scene.width} ${scene.height}`} className={className ?? "block w-full"} role="img" aria-label={`${scene.title}: ${step.title}. ${step.text}`}>
           <defs>
@@ -115,7 +160,7 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
           </defs>
 
           {scene.boxes
-            .filter((b) => b.group)
+            .filter((b) => b.group && shown(b.id))
             .map((b) => {
               const t = TONES[b.tone ?? "slate"];
               return (
@@ -128,47 +173,171 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
               );
             })}
 
-          {scene.edges.map((e) => {
-            const a = byId.get(e.from)!;
-            const b = byId.get(e.to)!;
-            const { d, mid } = edgePath(a, b, e.bend);
-            const active = on.has(e.id);
+          {regions.map((b) => {
+            const ns = b.region === "namespace";
+            const d = depth(b);
+            const r = b.region === "cluster" ? 14 : 10;
+            const active = on.has(b.id);
             return (
-              <g key={e.id} className="ill-t" opacity={lit(e.id) ? 1 : 0.3}>
-                <path id={`${pre}-${e.id}`} d={d} fill="none" stroke={active ? INK : LINE} strokeWidth={active ? 1.8 : 1.2} markerEnd={`url(#arr-${pre})`} />
-                {e.label && (
-                  <g>
-                    <rect x={mid.x - e.label.length * 3 - 6} y={mid.y - 9} width={e.label.length * 6 + 12} height={18} fill={PAPER} stroke={active ? INK : LINE} />
-                    <text x={mid.x} y={mid.y + 3.5} textAnchor="middle" fill={active ? INK : SOFT} style={{ fontSize: 10, fontFamily: "var(--font-geist-mono)" }}>
-                      {e.label}
-                    </text>
-                  </g>
-                )}
-                {flow.has(e.id) && (
-                  <circle key={`${i}-${e.id}`} className="ill-packet" r={4.5} fill={INK} stroke={PAPER} strokeWidth={1.5}>
-                    <animateMotion dur="1.6s" repeatCount="indefinite" rotate="auto">
-                      <mpath href={`#${pre}-${e.id}`} />
-                    </animateMotion>
-                  </circle>
-                )}
+              <g key={b.id} className={isNew(b.id) ? "ill-t ill-add" : "ill-t"}>
+                <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={r} fill={ns ? "var(--ill-ns-fill)" : `rgb(var(--ink-rgb) / ${0.035 + 0.05 * d})`} stroke={active ? INK : ns ? NS : LINE} strokeWidth={active ? 1.8 : ns ? 1.5 : 1.2} strokeDasharray={ns ? "7 4" : undefined} />
+                {!ns && <path d={`M${b.x},${b.y + STRIP} V${b.y + r} a${r},${r} 0 0 1 ${r},${-r} H${b.x + b.w - r} a${r},${r} 0 0 1 ${r},${r} V${b.y + STRIP} z`} fill={`rgb(var(--ink-rgb) / ${0.05 + 0.05 * d})`} />}
               </g>
             );
           })}
 
+          {scene.edges
+            .filter((e) => shown(e.id) && shown(e.from) && shown(e.to))
+            .map((e) => {
+              const a = byId.get(e.from)!;
+              const b = byId.get(e.to)!;
+              const g = edgePath(rectOf(a), rectOf(b), e.bend, { fromSide: e.fromSide, toSide: e.toSide, elbow: e.elbow, bus: e.bus });
+              const { d } = g;
+              const owns = e.kind === "owns";
+              const edgeRegion = e.cross ? byId.get(e.cross) : undefined;
+              const cross = edgeRegion ? crossing(g, edgeRegion) : null;
+              // A line that enters the cluster carries its label outside, between the actor and the boundary.
+              const far = edgeRegion && insideRect(edgeRegion, g.p) ? g.q : g.p;
+              const mid: Pt = cross ? { x: (far.x + cross.pt.x) / 2, y: (far.y + cross.pt.y) / 2 } : g.mid;
+              const active = on.has(e.id);
+              const stroke = owns ? (active ? "var(--ill-ns-on)" : NS) : active ? INK : LINE;
+              const lw = e.label ? e.label.length * fs * 0.6 + 12 : 0;
+              return (
+                <g key={e.id} className={isNew(e.id) ? "ill-t ill-add" : "ill-t"} opacity={lit(e.id) ? 1 : dim - 0.05}>
+                  <path id={`${pre}-${e.id}`} d={d} fill="none" stroke={stroke} strokeWidth={active ? 1.8 : owns ? 1.5 : 1.2} strokeDasharray={owns ? "5 4" : undefined} markerEnd={`url(#arr-${pre})`} />
+                  {cross && <circle cx={cross.pt.x} cy={cross.pt.y} r={5} fill={PAPER} stroke={active ? INK : SOFT} strokeWidth={2} />}
+                  {e.label && (
+                    <g>
+                      <rect x={mid.x - lw / 2} y={mid.y - (fs + 8) / 2} width={lw} height={fs + 8} fill={PAPER} stroke={owns ? NS : active ? INK : LINE} />
+                      <text x={mid.x} y={mid.y + fs * 0.35} textAnchor="middle" fill={active ? INK : SOFT} style={{ fontSize: fs, fontFamily: MONO }}>
+                        {e.label}
+                      </text>
+                    </g>
+                  )}
+                  {flow.has(e.id) && (
+                    <circle key={`${i}-${e.id}`} className="ill-packet" r={4.5} fill={INK} stroke={PAPER} strokeWidth={1.5}>
+                      <animateMotion dur="1.6s" repeatCount="indefinite" rotate="auto">
+                        <mpath href={`#${pre}-${e.id}`} />
+                      </animateMotion>
+                    </circle>
+                  )}
+                </g>
+              );
+            })}
+
+          {/* Region titles sit above the edges, with a paper halo, so a line that crosses a header never runs through its words. */}
+          {regions.map((b) => (
+            <g key={b.id} className={isNew(b.id) ? "ill-t ill-add" : "ill-t"}>
+              <Icon name={b.icon} x={b.x + 10} y={b.y + 4} size={18} />
+              <text x={b.x + 10 + (b.icon ? 24 : 0)} y={b.y + 18} fill={b.region === "namespace" ? "var(--ill-ns-text)" : INK} stroke={PAPER} strokeWidth={4} strokeLinejoin="round" paintOrder="stroke" style={{ fontSize: 12, fontWeight: 600 }}>
+                {b.label}
+              </text>
+              {b.sub && (
+                <text x={b.x + b.w - 10} y={b.y + 18} textAnchor="end" fill={SOFT} stroke={PAPER} strokeWidth={4} strokeLinejoin="round" paintOrder="stroke" style={{ fontSize: 12, fontFamily: MONO }}>
+                  {b.sub}
+                </text>
+              )}
+            </g>
+          ))}
+
           {scene.boxes
-            .filter((b) => !b.group)
+            .filter((b) => !b.group && !b.region && shown(b.id))
             .map((b) => {
               const t = TONES[b.tone ?? "slate"];
               const active = on.has(b.id);
               const isOff = off.has(b.id);
+              const cls = isNew(b.id) ? "ill-t ill-add" : "ill-t";
+              const op = lit(b.id) ? 1 : dim;
+              const textFill = isOff ? "var(--ill-off)" : INK;
+
+              if (b.kind === "pod") {
+                const isOpen = open.has(b.id) && !!b.containers;
+                const r = rectOf(b);
+                const s = STATUS[statusTone(status.get(b.id))];
+                const st = status.get(b.id);
+                const bw = st ? st.length * 6.6 + 16 : 0;
+                const pending = statusTone(st) === "warn";
+                return (
+                  <g key={b.id} className={cls} opacity={op}>
+                    <rect x={r.x} y={r.y} width={r.w} height={r.h} rx={8} fill={PAPER} stroke={active ? INK : LINE} strokeWidth={active ? 1.8 : 1} strokeDasharray={pending ? "5 3" : undefined} />
+                    <rect x={r.x + 5} y={r.y + 8} width={4} height={r.h - 16} rx={2} fill={s.bar} />
+                    <Icon name={b.icon ?? "pod"} x={r.x + 16} y={r.y + 7} size={18} />
+                    <text x={r.x + 40} y={r.y + 21} fill={textFill} style={{ fontSize: 12, fontWeight: 600 }}>
+                      {b.label}
+                    </text>
+                    {st && (
+                      <g>
+                        <rect x={r.x + 16} y={r.y + 31} width={bw} height={20} rx={10} fill={s.soft} stroke={s.bar} strokeWidth={1} />
+                        <text x={r.x + 16 + bw / 2} y={r.y + 45} textAnchor="middle" fill={s.text} style={{ fontSize: 12, fontWeight: 600 }}>
+                          {st}
+                        </text>
+                      </g>
+                    )}
+                    {b.sub && (
+                      <text x={r.x + 16} y={r.y + 68} fill={SOFT} style={{ fontSize: 12, fontFamily: MONO }}>
+                        {b.sub}
+                      </text>
+                    )}
+                    {isOff && <path d={`M${r.x + r.w - 18},${r.y + 8} l8,8 M${r.x + r.w - 10},${r.y + 8} l-8,8`} stroke="var(--color-red-700)" strokeWidth={1.6} strokeLinecap="round" />}
+                    {isOpen &&
+                      b.containers!.map((c, k) => (
+                        <g key={c.name}>
+                          <rect x={r.x + 14} y={r.y + b.h + 2 + k * 30} width={r.w - 28} height={26} rx={6} fill={PAPER} stroke={s.bar} strokeWidth={1.2} />
+                          <text x={r.x + 22} y={r.y + b.h + 19 + k * 30} fill={INK} style={{ fontSize: 12, fontWeight: 600 }}>
+                            {c.name}
+                            {c.sub && <tspan fill={SOFT} style={{ fontWeight: 400, fontFamily: MONO }}>{`  ${c.sub}`}</tspan>}
+                          </text>
+                        </g>
+                      ))}
+                  </g>
+                );
+              }
+
+              if (b.kind === "chip" && b.icon && b.h >= 40 && !b.outside) {
+                // A tall chip stacks its icon over its name.
+                return (
+                  <g key={b.id} className={cls} opacity={op}>
+                    <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={6} fill={PAPER} stroke={active ? INK : LINE} strokeWidth={active ? 1.8 : 1} />
+                    <Icon name={b.icon} x={b.x + b.w / 2 - 9} y={b.y + 6} size={18} />
+                    <text x={b.x + b.w / 2} y={b.y + b.h - 8} textAnchor="middle" fill={textFill} style={{ fontSize: 12, fontWeight: 600 }}>
+                      {b.label}
+                    </text>
+                  </g>
+                );
+              }
+
+              if (b.kind === "chip" || b.outside) {
+                const actor = !!b.outside;
+                const size = actor ? 22 : 16;
+                const textX = b.x + (b.icon ? (actor ? 38 : 26) : actor ? 12 : b.w / 2);
+                const anchor = b.icon || actor ? "start" : "middle";
+                const lineY = b.sub ? b.y + (actor ? 22 : b.h / 2 - 1) : b.y + b.h / 2 + 4;
+                return (
+                  <g key={b.id} className={cls} opacity={op}>
+                    <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={actor ? 8 : 6} fill={PAPER} stroke={active ? INK : actor ? SOFT : LINE} strokeWidth={active ? 1.8 : actor ? 1.5 : 1} />
+                    <Icon name={b.icon} x={b.x + (actor ? 8 : 6)} y={b.y + (actor && b.sub ? 8 : (b.h - size) / 2)} size={size} />
+                    <text x={textX} y={lineY} textAnchor={anchor} fill={textFill} style={{ fontSize: 12, fontWeight: 600 }}>
+                      {b.label}
+                    </text>
+                    {b.sub && (
+                      <text x={b.x + (b.icon || !actor ? textX - b.x : 12)} y={b.y + (actor ? 42 : b.h / 2 + 13)} textAnchor={anchor} fill={SOFT} style={{ fontSize: 12, fontFamily: MONO }}>
+                        {b.sub}
+                      </text>
+                    )}
+                  </g>
+                );
+              }
+
+              const tx = b.x + b.w / 2 + (b.icon ? 11 : 0);
               return (
-                <g key={b.id} className="ill-t" opacity={lit(b.id) ? 1 : 0.35}>
+                <g key={b.id} className={cls} opacity={op}>
                   <rect x={b.x} y={b.y} width={b.w} height={b.h} fill={isOff ? PAPER : t.fill} stroke={active ? t.on : t.stroke} strokeWidth={active ? 1.8 : 1} />
-                  <text x={b.x + b.w / 2} y={b.y + (b.sub ? b.h / 2 - 2 : b.h / 2 + 4)} textAnchor="middle" fill={isOff ? "var(--ill-off)" : t.text} style={{ fontSize: 12, fontWeight: 600 }}>
+                  <Icon name={b.icon} x={b.x + 8} y={b.y + b.h / 2 - 10} size={20} />
+                  <text x={tx} y={b.y + (b.sub ? b.h / 2 - 2 : b.h / 2 + 4)} textAnchor="middle" fill={isOff ? "var(--ill-off)" : t.text} style={{ fontSize: 12, fontWeight: 600 }}>
                     {b.label}
                   </text>
                   {b.sub && (
-                    <text x={b.x + b.w / 2} y={b.y + b.h / 2 + 13} textAnchor="middle" fill={isOff ? "var(--ill-off)" : t.sub} style={{ fontSize: 10 }}>
+                    <text x={tx} y={b.y + b.h / 2 + 13} textAnchor="middle" fill={isOff ? "var(--ill-off)" : t.sub} style={{ fontSize: 10 }}>
                       {b.sub}
                     </text>
                   )}

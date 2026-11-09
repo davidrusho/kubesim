@@ -8,8 +8,9 @@
 // scene in ./scenes.ts and register it; nothing here needs to change.
 
 import { useEffect, useId, useRef, useState } from "react";
-import { crossing, edgePath, insideRect, type Pt, type Rect, type Side } from "./geometry";
-import { ICON_DIR, LEGEND_H, statusTone, type StatusTone } from "./shared";
+import { edgePath, insideRect, labelAt, type Side } from "./geometry";
+import { resolve, STRIP } from "./layout";
+import { ICON_DIR, statusTone, type StatusTone } from "./shared";
 
 export type Tone = "slate" | "violet" | "blue" | "green" | "amber" | "red";
 
@@ -36,7 +37,7 @@ export interface Box {
   icon?: string;
   /** Status word shown on a Pod: Running and Ready are green, Pending and ContainerCreating amber, failures red. */
   status?: string;
-  /** A Pod the scheduler has not yet placed. It must be drawn outside every Node region (the scene tests check). */
+  /** A Pod the scheduler has not yet placed: it starts outside every Node region and a step's `move` puts it on one (the scene tests check). */
   unbound?: boolean;
   /** A Pod's containers, shown as chips inside the card in steps that list the Pod under `open`. */
   containers?: { name: string; sub?: string }[];
@@ -51,8 +52,8 @@ export interface Edge {
   label?: string;
   /** Bend the line by this many px (perpendicular). */
   bend?: number;
-  /** "traffic" (default): a solid line. "owns": a dashed line for logical ownership (Deployment owns ReplicaSet owns Pods). "blocked": red, dashed, with a cross: traffic that is refused. */
-  kind?: "traffic" | "owns" | "blocked";
+  /** "traffic" (default): a solid line. "owns": a dashed line for logical ownership (Deployment owns ReplicaSet owns Pods). "blocked": red, dashed, with a cross: traffic that is refused. "watch": dotted, pointing from the watcher at what it watches. */
+  kind?: "traffic" | "owns" | "blocked" | "watch";
   /** Id of a region this edge enters or leaves: a marker is drawn where it crosses the region's boundary. */
   cross?: string;
   /** Leave the `from` box / enter the `to` box at the middle of this side, instead of along the line between their centres. */
@@ -79,6 +80,10 @@ export interface Step {
   status?: Record<string, string>;
   /** Edges that are blocked (drawn red with a cross) from this step on, e.g. traffic a NetworkPolicy refuses. */
   block?: string[];
+  /** Move boxes to a new place from this step on, e.g. a Pod from the unscheduled area into the Node the scheduler chose. */
+  move?: Record<string, { x: number; y: number; parent?: string }>;
+  /** Change a chip's subtitle from this step on, e.g. a component's version. */
+  sub?: Record<string, string>;
   /** Pods drawn open (showing their containers) in this step only. */
   open?: string[];
 }
@@ -116,7 +121,6 @@ const STATUS: Record<StatusTone, { bar: string; soft: string; text: string }> = 
   bad: { bar: "var(--ill-bad)", soft: "var(--ill-bad-soft)", text: "var(--ill-bad-text)" },
   idle: { bar: LINE, soft: "var(--ill-fill-6)", text: SOFT },
 };
-const STRIP = 26;
 const MONO = "var(--font-geist-mono)";
 
 /** The icon, if the box names one. */
@@ -125,46 +129,16 @@ function Icon({ name, x, y, size }: { name?: string; x: number; y: number; size:
   return <image href={`${ICON_DIR}${name}.svg`} x={x} y={y} width={size} height={size} aria-hidden />;
 }
 
-/** Closed or open, a Pod card is as tall as the step says. */
-function drawn(b: Box, open: boolean): Rect {
-  return { x: b.x, y: b.y, w: b.w, h: open && b.openH ? b.openH : b.h };
-}
-
 /** The scene's drawing for one step. */
-function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?: string }) {
+export function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?: string }) {
   const step = scene.steps[i];
   const on = new Set(step.on);
   const off = new Set(step.off ?? []);
   const flow = new Set(step.flow ?? []);
-  const open = new Set(step.open ?? []);
-  // A scene may build up: ids a step lists under `add` appear from that step on. Anything no step adds is always there.
-  const addedAt = new Map<string, number>();
-  scene.steps.forEach((s, k) => s.add?.forEach((id) => addedAt.has(id) || addedAt.set(id, k)));
-  const shown = (id: string) => (addedAt.get(id) ?? 0) <= i;
-  const isNew = (id: string) => addedAt.get(id) === i;
-  const status = new Map<string, string>();
-  scene.boxes.forEach((b) => b.status && status.set(b.id, b.status));
-  scene.steps.slice(0, i + 1).forEach((s) => Object.entries(s.status ?? {}).forEach(([id, v]) => status.set(id, v)));
-  const blocked = new Set<string>();
-  scene.steps.slice(0, i + 1).forEach((s) => s.block?.forEach((id) => blocked.add(id)));
+  const R = resolve(scene, i);
+  const { shown, isNew, open, blocked, rectOf, byId } = R;
+  const boxes = R.boxes;
   const kindOf = (e: Edge) => (blocked.has(e.id) ? "blocked" : (e.kind ?? "traffic"));
-  const byId = new Map(scene.boxes.map((b) => [b.id, b]));
-  // A region is drawn only as tall as what is on screen in it (plus the padding it was drawn with), so early steps show no empty frame.
-  const effCache = new Map<string, Rect>();
-  const rectOf = (b: Box): Rect => (b.region ? effOf(b) : drawn(b, open.has(b.id)));
-  function effOf(b: Box): Rect {
-    const hit = effCache.get(b.id);
-    if (hit) return hit;
-    const kids = scene.boxes.filter((c) => c.parent === b.id);
-    const full = (c: Box) => c.y + Math.max(c.h, c.openH ?? 0);
-    const fullBottom = kids.length ? Math.max(...kids.map(full)) : b.y + STRIP;
-    const pad = Math.max(6, b.y + b.h - fullBottom);
-    const vis = kids.filter((c) => shown(c.id));
-    const visBottom = vis.length ? Math.max(...vis.map((c) => (c.region ? effOf(c).y + effOf(c).h : full(c)))) : b.y + STRIP;
-    const r = { x: b.x, y: b.y, w: b.w, h: Math.min(b.h, visBottom + pad - b.y) };
-    effCache.set(b.id, r);
-    return r;
-  }
   const lit = (id: string) => on.size === 0 || on.has(id) || isNew(id);
   // Sizes are authored for a drawing that fills the 848px Concepts column; a narrower viewBox keeps its original 10px labels.
   const unit = scene.width / 848;
@@ -173,24 +147,20 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
   const dim = unit >= 1 ? 0.55 : 0.35;
   // The same scene can be drawn twice (inline and enlarged): keep marker/path ids unique.
   const pre = `${scene.id}${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
-  const regions = scene.boxes.filter((b) => b.region && shown(b.id)).sort((a, b) => b.w * b.h - a.w * a.h);
+  const regions = boxes.filter((b) => b.region && shown(b.id)).sort((a, b) => b.w * b.h - a.w * a.h);
   const depth = (b: Box) => regions.filter((r) => r !== b && insideRect(r, { x: b.x + 1, y: b.y + 1 }) && b.x + b.w <= r.x + r.w + 0.5 && b.y + b.h <= r.y + r.h + 0.5).length;
   const visEdges = scene.edges.filter((e) => shown(e.id) && shown(e.from) && shown(e.to));
   const legend = scene.legend
     ? [
         visEdges.some((e) => kindOf(e) === "traffic") && { k: "traffic", text: "traffic" },
+        visEdges.some((e) => kindOf(e) === "watch") && { k: "watch", text: "watches (arrow points at what is watched)" },
         visEdges.some((e) => kindOf(e) === "owns") && { k: "owns", text: "owns or refers to" },
         visEdges.some((e) => kindOf(e) === "blocked") && { k: "blocked", text: "blocked" },
         visEdges.some((e) => e.cross) && { k: "cross", text: "crosses the cluster boundary" },
       ].filter((x): x is { k: string; text: string } => !!x)
     : [];
-  // A scene that builds up shows only what is on screen: crop to it (full width, so labels never move sideways).
-  const modern = scene.boxes.some((b) => b.region || b.kind || b.outside);
-  const vis = scene.boxes.filter((b) => shown(b.id) && (b.region || b.kind || b.outside || b.group));
-  const top = modern && vis.length ? Math.max(0, Math.min(...vis.map((b) => b.y)) - 8) : 0;
-  const bottom = modern && vis.length ? Math.min(scene.height, Math.max(...vis.map((b) => rectOf(b).y + rectOf(b).h)) + 8) : scene.height;
-  const legendY = bottom + (legend.length ? 4 : 0);
-  const viewH = legend.length ? legendY + LEGEND_H - top : bottom - top;
+  const { top, bottom } = R.view;
+  const viewH = bottom - top;
   return (
     <svg viewBox={`0 ${top} ${scene.width} ${viewH}`} className={className ?? "block w-full"} role="img" aria-label={`${scene.title}: ${step.title}. ${step.text}`}>
           <defs>
@@ -199,7 +169,7 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
             </marker>
           </defs>
 
-          {scene.boxes
+          {boxes
             .filter((b) => b.group && shown(b.id))
             .map((b) => {
               const t = TONES[b.tone ?? "slate"];
@@ -235,24 +205,22 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
               const ek = kindOf(e);
               const owns = ek === "owns";
               const bad = ek === "blocked";
+              const watch = ek === "watch";
               const edgeRegion = e.cross ? byId.get(e.cross) : undefined;
-              const cross = edgeRegion ? crossing(g, edgeRegion) : null;
-              // A line that enters the cluster carries its label outside, between the actor and the boundary.
-              const far = edgeRegion && insideRect(edgeRegion, g.p) ? g.q : g.p;
-              const mid: Pt = cross ? { x: (far.x + cross.pt.x) / 2, y: (far.y + cross.pt.y) / 2 } : g.mid;
+              const { mid, cross: crossPt } = labelAt(g, edgeRegion ? rectOf(edgeRegion) : undefined);
               const active = on.has(e.id);
               const stroke = bad ? "var(--ill-bad)" : owns ? (active ? "var(--ill-ns-on)" : NS) : active ? INK : LINE;
               const lw = e.label ? e.label.length * fs * 0.6 + 12 : 0;
               return (
                 <g key={e.id} className={isNew(e.id) ? "ill-t ill-add" : "ill-t"} opacity={lit(e.id) ? 1 : dim - 0.05}>
-                  <path id={`${pre}-${e.id}`} d={d} fill="none" stroke={stroke} strokeWidth={active ? 1.8 : owns || bad ? 1.5 : 1.2} strokeDasharray={owns ? "5 4" : bad ? "4 3" : undefined} markerEnd={`url(#arr-${pre})`} />
+                  <path id={`${pre}-${e.id}`} d={d} fill="none" stroke={stroke} strokeWidth={active ? 2 : owns || bad ? 1.5 : watch ? 1.8 : 1.2} strokeDasharray={owns ? "5 4" : bad ? "4 3" : watch ? "1.5 3.5" : undefined} strokeLinecap={watch ? "round" : undefined} markerEnd={`url(#arr-${pre})`} />
                   {bad && (
                     <g stroke="var(--ill-bad)" strokeWidth={2} strokeLinecap="round">
                       <circle cx={g.mid.x} cy={g.mid.y} r={9} fill={PAPER} />
                       <path d={`M${g.mid.x - 4},${g.mid.y - 4} l8,8 M${g.mid.x + 4},${g.mid.y - 4} l-8,8`} />
                     </g>
                   )}
-                  {cross && <circle cx={cross.pt.x} cy={cross.pt.y} r={5} fill={PAPER} stroke={active ? INK : SOFT} strokeWidth={2} />}
+                  {crossPt && <circle cx={crossPt.x} cy={crossPt.y} r={5} fill={PAPER} stroke={active ? INK : SOFT} strokeWidth={2} />}
                   {e.label && (
                     <g>
                       <rect x={mid.x - lw / 2} y={mid.y - (fs + 8) / 2} width={lw} height={fs + 8} fill={PAPER} stroke={owns ? NS : active ? INK : LINE} />
@@ -287,7 +255,7 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
             </g>
           ))}
 
-          {scene.boxes
+          {boxes
             .filter((b) => !b.group && !b.region && shown(b.id))
             .map((b) => {
               const t = TONES[b.tone ?? "slate"];
@@ -300,8 +268,8 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
               if (b.kind === "pod") {
                 const isOpen = open.has(b.id) && !!b.containers;
                 const r = rectOf(b);
-                const s = STATUS[statusTone(status.get(b.id))];
-                const st = status.get(b.id);
+                const s = STATUS[statusTone(b.status)];
+                const st = b.status;
                 const bw = st ? st.length * 6.6 + 16 : 0;
                 const pending = statusTone(st) === "warn";
                 return (
@@ -395,13 +363,13 @@ function SceneSvg({ scene, i, className }: { scene: Scene; i: number; className?
               );
             })}
           {legend.length > 0 && (
-            <g transform={`translate(6 ${legendY + 4})`} aria-hidden>
+            <g transform={`translate(6 ${bottom - 22})`} aria-hidden>
               {legend.reduce<{ x: number; els: React.ReactNode[] }>(
                 (acc, it) => {
                   const w = 30 + it.text.length * 7.2;
                   acc.els.push(
                     <g key={it.k} transform={`translate(${acc.x} 0)`}>
-                      {it.k === "cross" ? <circle cx={10} cy={8} r={5} fill={PAPER} stroke={SOFT} strokeWidth={2} /> : <path d="M0,8 H20" stroke={it.k === "owns" ? NS : it.k === "blocked" ? "var(--ill-bad)" : INK} strokeWidth={1.5} strokeDasharray={it.k === "owns" ? "5 4" : it.k === "blocked" ? "4 3" : undefined} />}
+                      {it.k === "cross" ? <circle cx={10} cy={8} r={5} fill={PAPER} stroke={SOFT} strokeWidth={2} /> : <path d="M0,8 H20" stroke={it.k === "owns" ? NS : it.k === "blocked" ? "var(--ill-bad)" : INK} strokeWidth={it.k === "watch" ? 1.8 : 1.5} strokeLinecap={it.k === "watch" ? "round" : undefined} strokeDasharray={it.k === "owns" ? "5 4" : it.k === "blocked" ? "4 3" : it.k === "watch" ? "1.5 3.5" : undefined} />}
                       <text x={26} y={12} fill={SOFT} style={{ fontSize: 12 }}>
                         {it.text}
                       </text>

@@ -121,3 +121,11 @@ export function curveHitsRect(g: EdgeGeometry, r: Rect): boolean {
   for (let i = 3; i <= N - 3; i++) if (insideRect(r, pointAt(g, i / N))) return true;
   return false;
 }
+
+/** Where an edge's label sits, and where it crosses `region` (if it has one). An edge that enters a region carries its label outside, between the far end and the boundary. */
+export function labelAt(g: EdgeGeometry, region?: Rect): { mid: Pt; cross: Pt | null } {
+  const cross = region ? crossing(g, region) : null;
+  if (!cross || !region) return { mid: g.mid, cross: null };
+  const far = insideRect(region, g.p) ? g.q : g.p;
+  return { mid: { x: (far.x + cross.pt.x) / 2, y: (far.y + cross.pt.y) / 2 }, cross: cross.pt };
+}

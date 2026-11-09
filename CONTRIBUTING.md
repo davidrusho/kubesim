@@ -86,6 +86,16 @@ Illustrations are data, not drawings. Add a `Scene` to [`components/illustration
 
 Register it in `SCENES`, then embed it in a Lesson body with ` ```illustration <id>``` `. It also appears on `/concepts` automatically. Packets are hidden under `prefers-reduced-motion`.
 
+A scene can also show how things nest and where they sit. All of this is optional, and a scene that uses none of it renders as before:
+
+- **Containment.** `region: "cluster" | "node" | "namespace"` draws a tinted region with a header strip; regions nested inside others are drawn darker. Set `parent` on a box to the id of the region it sits in; the tests check that it lies inside. `kind: "pod"` draws a Pod card with a status-coloured bar and a badge from `status` (`Running 1/1` green, `Pending` and `ContainerCreating` amber, failures red). Give a Pod `containers` and `openH` and list it under a step's `open` to show its containers. `kind: "chip"` is a small component, such as a kubelet.
+- **Outside actors.** `outside: true` draws an actor (kubectl, a load balancer, a registry) that must lie outside the cluster region. An edge that enters the cluster names the region in `cross`, which draws an entry marker where the line meets its boundary; keep its `label` to a short verb.
+- **Logical vs physical.** `kind: "owns"` on an edge draws a dashed ownership line (Deployment, ReplicaSet, Pods). `fromSide`/`toSide` pick where an edge leaves and enters a box, and `elbow: true` with a shared `bus` routes right-angled edges that several boxes can share.
+- **Icons.** `icon: "pod"` names a file in `public/icons/k8s/` (official Kubernetes icons, see [NOTICE.md](NOTICE.md)). Add a file there before naming it.
+- **Building up.** A step's `add` lists boxes and edges that appear from that step on (anything no step adds is always drawn), and its `status` sets a Pod's status from then on.
+
+Draw new scenes 848 wide, the width of the Concepts column, so the 12px text is 12px on screen. `components/illustrations/scenes.test.ts` checks every scene: ids, references, nesting, outside actors, entry markers, icons, overlaps and edges that run through boxes.
+
 ## Fix or extend the engine
 
 The engine ([`lib/engine`](lib/engine)) must behave like real Kubernetes. When you change behaviour:

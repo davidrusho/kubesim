@@ -112,6 +112,12 @@ describe.each(Object.values(SCENES))("scene $id", (scene) => {
     }
   });
 
+  test("a scene with a legend leaves 28px free at the bottom", () => {
+    if (!scene.legend) return;
+    const bottom = Math.max(...scene.boxes.map((b) => full(b).y + full(b).h));
+    expect(scene.height - bottom, `${scene.id} has no room for its legend`).toBeGreaterThanOrEqual(28);
+  });
+
   test("icons exist as files", () => {
     for (const b of scene.boxes) {
       if (b.icon) expect(existsSync(join(PUBLIC, "icons/k8s", `${b.icon}.svg`)), `public/icons/k8s/${b.icon}.svg`).toBe(true);

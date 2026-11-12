@@ -49,7 +49,7 @@ export function LessonPlayer({ slug }: { slug: string }) {
   /** Counts steps passed in this visit (not restored ones): each one gets a little burst. */
   const [celebrate, setCelebrate] = useState(0);
   const [solving, setSolving] = useState<{ step: number; boosted: boolean } | null>(null);
-  const [layout, setLayout] = useLayoutChoice("spotlight");
+  const [layout, setLayout] = useLayoutChoice("split");
   const [mobileTab, setMobileTab] = useState<"steps" | "cluster" | "terminal">("steps");
   const c = sim.cluster;
   const current = lesson.steps.findIndex((_, i) => !passed.includes(i));

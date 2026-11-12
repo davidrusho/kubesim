@@ -18,6 +18,7 @@ import { PanZoom, type Bounds, type FullShape, type Inset } from "./PanZoom";
 import { useDrag, type MoveCallback } from "./DragLayer";
 import type { DragItem } from "@/lib/sim/drag";
 import type { ObjectKind } from "@/lib/sim/objects";
+import type { ControlPlaneStatus } from "@/lib/sim/controlplane";
 
 export type SelKind = ObjectKind;
 export type Selection = { kind: SelKind; ns?: string; name: string } | null;
@@ -46,8 +47,10 @@ const ING_W = 250;
 const ING_H = 64;
 const QUEUE_W = 174;
 /** The control plane collapses to this when its system Pods are hidden and nothing else runs there. */
-const CP_W = 236;
+const CP_W = 300;
 const CP_BODY = 44;
+/** The kubelet row under every Node, when the screen passes `health`. */
+const KUBELET_ROW = 24;
 const SIDE_W = 200;
 const SIDE_H = 44;
 
@@ -193,10 +196,14 @@ interface Props {
   inset?: Inset;
   /** Nodes per row (phones stack them so each stays readable). Default 4. */
   perRow?: number;
+  /** Bumped by the screen (e.g. a splitter released) to re-fit the diagram even if it was moved. */
+  refit?: number;
   /** See PanZoom: off when the canvas sits inside a scrolling page. */
   captureWheel?: boolean;
   /** A tall canvas: wrap the workloads into rows no wider than the Nodes and put config and storage underneath, so the diagram grows down instead of across. */
   wrap?: boolean;
+  /** Each control-plane component's and each kubelet's health. Left out, the control plane draws as four quiet chips and the Nodes have no kubelet row. */
+  health?: ControlPlaneStatus;
   /** Set replicas from the canvas (a stepper on Deployment and StatefulSet cards). Left out, the cards have none. */
   onScale?: (kind: "deployment" | "statefulset", ns: string, name: string, replicas: number) => void;
 }
@@ -232,7 +239,7 @@ function podRefs(p: Pod): { configmap: Set<string>; secret: Set<string>; pvc: Se
   return out;
 }
 
-export function ClusterView({ cluster: c, packets, selection, onSelect, showSystem, slots, now, namespace, inset, perRow: perRowProp = 4, captureWheel, wrap: wrapProp = false, onScale }: Props) {
+export function ClusterView({ cluster: c, packets, selection, onSelect, showSystem, slots, now, namespace, inset, perRow: perRowProp = 4, refit = 0, captureWheel, wrap: wrapProp = false, health, onScale }: Props) {
   // Enlarged to full screen, the diagram lays itself out for the screen it now has: one Node per row on a
   // phone held upright, wrapped rows on a tall screen.
   const [fullShape, setFullShape] = useState<FullShape>(null);
@@ -450,7 +457,7 @@ export function ClusterView({ cluster: c, packets, selection, onSelect, showSyst
       const collapsed = node === cp && !showSystem && list.length === 0;
       if (collapsed) {
         nextSlots.set(name, new Map());
-        const h = HEAD + CP_BODY;
+        const h = HEAD + CP_BODY + (health ? KUBELET_ROW : 0);
         rowH = Math.max(rowH, h);
         const x = rowX;
         rowX += CP_W + NODE_GAP;
@@ -469,7 +476,7 @@ export function ClusterView({ cluster: c, packets, selection, onSelect, showSyst
       }
       const maxSlot = Math.max(-1, ...m.values());
       const rows = Math.max(1, Math.ceil((maxSlot + 1) / COLS));
-      const h = HEAD + PAD + rows * (CHIP_H + CHIP_GAP) - CHIP_GAP + PAD;
+      const h = HEAD + PAD + rows * (CHIP_H + CHIP_GAP) - CHIP_GAP + PAD + (health ? KUBELET_ROW : 0);
       rowH = Math.max(rowH, h);
       const x = rowX;
       rowX += NODE_W + NODE_GAP;
@@ -836,7 +843,7 @@ export function ClusterView({ cluster: c, packets, selection, onSelect, showSyst
   for (const w of podWires) spanOf.set(w.own.uid, Math.max(spanOf.get(w.own.uid) ?? 0, w.len));
 
   return (
-    <PanZoom bounds={bounds} mustFit={nodesArea} captureWheel={captureWheel} fitKey={`${tidied}:${perRow}:${wrap}:${yNodes}:${ordered.length}:${topCards.length}:${services.length}:${ingresses.length}:${sideItems.length > 0}`} onBackgroundClick={() => onSelect(null)} inset={inset} onZoom={setK} onFull={setFullShape} controls={custom ? <TidyButton onClick={tidy} /> : undefined}>
+    <PanZoom bounds={bounds} mustFit={nodesArea} captureWheel={captureWheel} fitKey={`${tidied}:${refit}:${perRow}:${wrap}:${yNodes}:${ordered.length}:${topCards.length}:${services.length}:${ingresses.length}:${sideItems.length > 0}`} onBackgroundClick={() => onSelect(null)} inset={inset} onZoom={setK} onFull={setFullShape} controls={custom ? <TidyButton onClick={tidy} /> : undefined}>
       {/* section labels */}
       {detail > 0 && !custom && (
         <g className="cv-label">
@@ -1057,9 +1064,12 @@ export function ClusterView({ cluster: c, packets, selection, onSelect, showSyst
         const barX = x + NW / 2;
         const barW = NW / 2 - 16;
         const statusW = textWidth(status, fz(12.5), { weight: 500 }) + fz(14);
+        const kube = health?.kubelets[name];
+        /** The component chips of the control plane, as the engine says they are (or quiet green ones when the screen passes no health). */
+        const comps = isCp ? (health?.components.length ? health.components : undefined) : undefined;
         return (
           <g key={node.metadata.uid} data-kind={isCp ? "cp" : "node"} className={cls("cv-obj cv-fade cursor-pointer", down && "is-down", !down && tone === "warn" && "is-warn")} {...dnd(`node:${name}`)} {...mover(objKey("Node", undefined, name), isCp ? undefined : item("node", undefined, name, `Node ${name}`))} onClick={click({ kind: "node", name })} {...act({ kind: "node", name }, `Node ${name}, ${status}, ${used} pods${showBars ? `, CPU requested ${Math.round((req.cpu / alloc.cpu) * 100)}%` : ""}`)}>
-            <title>{`${name} · ${node.status?.addresses[0].address}`}</title>
+            <title>{[`${name} · ${node.status?.addresses[0].address}`, ...(isCp ? (health?.components ?? []).filter((x) => x.cause).map((x) => `${x.name}: ${x.cause}`) : []), ...(kube?.cause ? [`kubelet: ${kube.cause}`] : [])].join("\n")}</title>
             <rect className="cv-body" x={x} y={y} width={NW} height={h} rx={R} />
             {sel && <rect className="cv-ring" x={x - 3.5} y={y - 3.5} width={NW + 7} height={h + 7} rx={R} />}
             {cordoned && <rect x={x} y={y} width={NW} height={h} rx={R} fill="url(#cv-hatch)" pointerEvents="none" />}
@@ -1093,34 +1103,71 @@ export function ClusterView({ cluster: c, packets, selection, onSelect, showSyst
               <g pointerEvents="none">
                 <title>kube-apiserver, etcd, kube-scheduler and kube-controller-manager run here. Turn on System pods to see them.</title>
                 <rect x={x + PAD} y={y + HEAD + 8} width={NW - PAD * 2} height={CP_BODY - 16} rx={R} className="cv-tint" />
-                <Mark cat={down ? "stale" : "ok"} x={x + PAD + 13} y={y + HEAD + CP_BODY / 2} />
-                <text x={x + PAD + 24} y={y + HEAD + CP_BODY / 2 + 4} className="cv-ink" style={{ fontSize: fz(11), fontWeight: 500 }}>
-                  4 system components
-                </text>
+                {comps ? (
+                  <>
+                    {comps.map((q, j) => (
+                      <Mark key={q.name} cat={q.tone} x={x + PAD + 13 + j * 12} y={y + HEAD + CP_BODY / 2} r={3.2} />
+                    ))}
+                    {(() => {
+                      // Every Pod Running: the quiet label. Otherwise the first one kubectl would not show as Running, with its STATUS word.
+                      const off = comps.filter((q) => q.tone !== "ok" && q.word);
+                      const text = off.length ? `${off[0].short} ${off[0].word}${off.length > 1 ? ` +${off.length - 1}` : ""}` : "4 system components";
+                      return (
+                        <text x={x + PAD + 13 + comps.length * 12 + 6} y={y + HEAD + CP_BODY / 2 + 4} className={off.length ? undefined : "cv-ink"} fill={off.length ? TONE_TEXT[off[0].tone] : undefined} style={{ fontSize: fz(11), fontWeight: 500 }}>
+                          {fit(text, NW - PAD * 2 - 13 - comps.length * 12 - 6 - 8, fz(11), { weight: 500 })}
+                        </text>
+                      );
+                    })()}
+                  </>
+                ) : (
+                  <>
+                    <Mark cat={down ? "stale" : "ok"} x={x + PAD + 13} y={y + HEAD + CP_BODY / 2} />
+                    <text x={x + PAD + 24} y={y + HEAD + CP_BODY / 2 + 4} className="cv-ink" style={{ fontSize: fz(11), fontWeight: 500 }}>
+                      4 system components
+                    </text>
+                  </>
+                )}
               </g>
             )}
             {isCp && !showSystem && !collapsed && (
               <g pointerEvents="none">
-                {["kube-apiserver", "etcd", "scheduler", "controller-mgr"].map((comp, j) => {
+                {(comps ?? [{ name: "kube-apiserver", short: "kube-apiserver", word: "", tone: down ? "muted" : "ok" }, { name: "etcd", short: "etcd", word: "", tone: down ? "muted" : "ok" }, { name: "kube-scheduler", short: "scheduler", word: "", tone: down ? "muted" : "ok" }, { name: "kube-controller-manager", short: "controller-mgr", word: "", tone: down ? "muted" : "ok" }]).map((q, j) => {
                   const cw = (NW - PAD * 2 - CHIP_GAP) / 2;
                   const px = x + PAD + (j % 2) * (cw + CHIP_GAP);
                   const py = y + HEAD + PAD + Math.floor(j / 2) * (CHIP_H + CHIP_GAP);
                   return (
-                    <g key={comp}>
+                    <g key={q.name}>
                       <rect x={px} y={py} width={cw} height={CHIP_H} rx={R} className="cv-tint" />
-                      <Mark cat={down ? "stale" : "ok"} x={px + 14} y={py + CHIP_H / 2} />
-                      <text x={px + 26} y={py + CHIP_H / 2 + 4} className="cv-ink cv-mono" style={{ fontSize: fz(11.5), fontWeight: 600 }}>
-                        {fit(comp, cw - 32, fz(11.5), { mono: true, weight: 600 })}
+                      <Mark cat={q.tone === "muted" && down ? "stale" : q.tone} x={px + 14} y={py + (q.word || comps ? CHIP_H / 2 - 7 : CHIP_H / 2)} />
+                      <text x={px + 26} y={py + (q.word || comps ? CHIP_H / 2 - 3 : CHIP_H / 2 + 4)} className="cv-ink cv-mono" style={{ fontSize: fz(11.5), fontWeight: 600 }}>
+                        {fit(q.short, cw - 32, fz(11.5), { mono: true, weight: 600 })}
                       </text>
+                      {comps && q.word && (
+                        <text x={px + 26} y={py + CHIP_H / 2 + 13} fill={TONE_TEXT[q.tone]} style={{ fontSize: fz(10.5), fontWeight: 500 }}>
+                          {fit(q.word, cw - 32, fz(10.5), { weight: 500 })}
+                        </text>
+                      )}
                     </g>
                   );
                 })}
               </g>
             )}
             {down && detail > 0 && (
-              <text x={x + NW / 2} y={y + h - 10} textAnchor="middle" className="fill-red-500" style={{ fontSize: fz(10.5), fontWeight: 500 }}>
+              <text x={x + NW / 2} y={y + h - 10 - (health ? KUBELET_ROW : 0)} textAnchor="middle" className="fill-red-500" style={{ fontSize: fz(10.5), fontWeight: 500 }}>
                 powered off · kubelet not reporting
               </text>
+            )}
+            {kube && (
+              <g pointerEvents="none" data-kubelet={name}>
+                <line className="cv-hair" x1={x + 1} x2={x + NW - 1} y1={y + h - KUBELET_ROW} y2={y + h - KUBELET_ROW} />
+                <Mark cat={kube.tone} x={x + PAD + 4} y={y + h - KUBELET_ROW / 2} r={3.2} />
+                <text x={x + PAD + 16} y={y + h - KUBELET_ROW / 2 + 4} className="cv-sub cv-mono" style={{ fontSize: fz(10.5) }}>
+                  kubelet
+                </text>
+                <text x={x + NW - PAD} y={y + h - KUBELET_ROW / 2 + 4} textAnchor="end" fill={TONE_TEXT[kube.tone]} style={{ fontSize: fz(10.5), fontWeight: 500 }}>
+                  {fit(kube.word, NW / 2 - PAD, fz(10.5), { weight: 500 })}
+                </text>
+              </g>
             )}
           </g>
         );

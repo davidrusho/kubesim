@@ -6,13 +6,20 @@
 import type { Deployment, Node, PersistentVolumeClaim, Pod } from "@/lib/engine";
 import { egressAllowed, isIsolated } from "@/lib/engine";
 import { dnsAllowed } from "@/lib/engine/netpol";
-import type { Lesson } from "./lessons";
+import type { Lesson, Step } from "./lessons";
 import { NETWORKING_CHALLENGES } from "./challenge-sets/networking";
 import { SECURITY_CHALLENGES } from "./challenge-sets/security";
 import { WORKLOADS_CHALLENGES } from "./challenge-sets/workloads";
 import { can, deployment, dep, endpointCount, firstContainer, obj, podsWith, reaches, readyCount, rolledOut, service, up } from "./lessons";
 
-export interface Challenge extends Lesson {
+/** A Challenge's goal: a Step whose `hints` are an explicit ladder, so it has no single `hint`. */
+export interface Goal extends Omit<Step, "hint"> {
+  /** 3 or 4 hints, least direct first: where to look (no command), the read-only command, what its output means, what to change. The fix is the rung after these. See lib/lessons/hints.ts. */
+  hints: string[];
+}
+
+export interface Challenge extends Omit<Lesson, "steps"> {
+  steps: Goal[];
   difficulty: "easy" | "medium" | "hard";
   /** The situation, told like a ticket from a colleague. Markdown-ish, like Step bodies. */
   brief: string;
@@ -97,8 +104,8 @@ export const CHALLENGES: Challenge[] = [
     difficulty: "easy",
     track: "workloads",
     title: "The site is down",
-    summary: "A Deployment that never became ready after a small change.",
-    brief: "Someone \"just bumped the nginx tag\" on the `web` Deployment an hour ago, and the site has been down since. None of the `web` Pods are Running. Get it serving again on a real nginx image.",
+    summary: "None of the `web` Pods are running and the site is down.",
+    brief: "The site has been down for an hour: none of the `web` Pods are Running. The Deployment was changed shortly before it went down. Get it serving again; `web` must still run nginx.",
     minutes: 4,
     concepts: ["ImagePullBackOff", "kubectl describe"],
     setup: (c) => deployment(c, "web", "nginx:stabel", 3),
@@ -108,7 +115,12 @@ export const CHALLENGES: Challenge[] = [
         title: "All three web Pods Running and Ready",
         body: "The `web` Deployment has 3 Pods, all Running and Ready.",
         check: (x) => rolledOut(x.cluster, "web") && readyCount(x.cluster, "web") === 3,
-        hint: "Describe one of the Pods and read the Events at the bottom. What image is it trying to pull?",
+        hints: [
+          "The Pods were placed on Nodes, but none of them ever becomes Ready. Something stops them before the app can run. Look at what one of the Pods reports about itself.",
+          "Describe the Pods and read the Events at the bottom, the lines from the kubelet: `kubectl describe pods -l app=web`.",
+          "The kubelet logs `Failed to pull image \"nginx:stabel\"` and then `ImagePullBackOff`. The registry has no image with that tag, so the container never starts. Read the tag letter by letter.",
+          "The image is set in the Deployment's Pod template, and the Deployment owns these Pods. Correct it there and let the rollout replace them.",
+        ],
         solution: { commands: ["kubectl set image deployment/web web=nginx:stable"] },
       },
     ],
@@ -118,9 +130,10 @@ export const CHALLENGES: Challenge[] = [
     difficulty: "easy",
     track: "networking",
     title: "Connection refused",
-    summary: "Healthy Pods, a Service in front of them, and no traffic getting through.",
-    brief: "`curl http://api` fails with `Failed to connect to api port 80`, but both `api` Pods are Running and Ready. Nobody has touched the Deployment. Make the Service work.",
+    summary: "Calls to a service fail although everything looks healthy.",
+    brief: "Calls to the `api` Service fail with `Failed to connect to api port 80`, but both `api` Pods are Running and Ready. Nobody has touched the Deployment. Make the Service work.",
     minutes: 4,
+    start: ["kubectl get pods -o wide", "kubectl get events --sort-by=.lastTimestamp", "curl http://api"],
     concepts: ["Service", "Selectors", "EndpointSlices"],
     setup: (c) => {
       deployment(c, "api", "nginxdemos/hello:plain-text", 2);
@@ -132,7 +145,12 @@ export const CHALLENGES: Challenge[] = [
         title: "http://api reaches both Pods",
         body: "The `api` Service sends traffic to both `api` Pods.",
         check: (x) => endpointCount(x.cluster, "api") === 2,
-        hint: "Compare the Service's selector (kubectl describe svc api) with the Pods' labels (kubectl get pods --show-labels).",
+        hints: [
+          "The Pods are healthy and the Service exists, so the fault sits in the link between them. Think about how a Service decides which Pods are its backends.",
+          "A Service finds its Pods by labels. Compare what the Service selects with the labels the Pods carry: `kubectl describe svc api`, then `kubectl get pods --show-labels`.",
+          "The Service shows `Selector: app=api-server` and `Endpoints: <none>`, but the Pods carry `app=api`. No Pod matches the selector, so the Service has nothing to send traffic to.",
+          "Make the two agree. The Pods are fine, so change the Service's selector to match their label.",
+        ],
         solution: { commands: [`kubectl patch service api -p '{"spec":{"selector":{"app":"api"}}}'`] },
       },
     ],
@@ -142,8 +160,8 @@ export const CHALLENGES: Challenge[] = [
     difficulty: "easy",
     track: "config",
     title: "Stuck before it starts",
-    summary: "Pods that never get as far as running their container.",
-    brief: "The `frontend` Pods have been stuck since someone tidied up \"unused\" ConfigMaps last night. The config they need is a single setting: `API_URL=http://api:8080`.",
+    summary: "Pods that are stuck and never start running.",
+    brief: "The `frontend` Pods have been stuck since last night and none of them is running. The one setting the app needs is `API_URL=http://api:8080`.",
     minutes: 5,
     concepts: ["ConfigMap", "CreateContainerConfigError"],
     setup: (c) => deployment(c, "frontend", "nginx:1.27", 2, "default", { envFrom: [{ configMapRef: { name: "frontend-config" } }] }),
@@ -153,7 +171,12 @@ export const CHALLENGES: Challenge[] = [
         title: "frontend running with its config",
         body: "Both `frontend` Pods are Running and Ready, and get `API_URL=http://api:8080` from the ConfigMap they expect.",
         check: (x) => readyCount(x.cluster, "frontend") === 2 && obj<{ data?: Record<string, string> }>(x.cluster, "ConfigMap", "frontend-config")?.data?.API_URL === "http://api:8080",
-        hint: "kubectl get pods shows the reason. kubectl describe pod names the ConfigMap it's looking for.",
+        hints: [
+          "The Pods have a Node and the image was pulled, but the container was never created. Look at the status the Pods report, then at the last warning the kubelet raised for them.",
+          "`kubectl get pods` shows the status. `kubectl describe pods -l app=frontend` shows the kubelet's warning in the Events.",
+          "The status is `CreateContainerConfigError` and the warning says `configmap \"frontend-config\" not found`. The Pods take their environment from that ConfigMap, and the cleanup deleted it.",
+          "Create a ConfigMap with the name the Pods ask for, holding the one setting from the brief. Then watch the Pods.",
+        ],
         solution: { commands: ["kubectl create configmap frontend-config --from-literal=API_URL=http://api:8080"] },
       },
     ],
@@ -164,7 +187,7 @@ export const CHALLENGES: Challenge[] = [
     track: "config",
     title: "The database won't stay up",
     summary: "A database that crashes a few seconds after every start.",
-    brief: "The `db` Deployment (Postgres) restarts every few seconds. Its password is already stored in the Secret `db-credentials`. Security says the password must come from that Secret, not be written into the Deployment.",
+    brief: "The `db` Deployment (Postgres) restarts every few seconds. The database password lives in the Secret `db-credentials`; Security says it must not be written into the Deployment.",
     minutes: 6,
     concepts: ["CrashLoopBackOff", "Secret", "kubectl logs --previous"],
     setup: (c) => {
@@ -182,7 +205,12 @@ export const CHALLENGES: Challenge[] = [
           const plain = !!ct?.env?.some((e) => e.name === "POSTGRES_PASSWORD" && e.value !== undefined);
           return fromSecret && !plain && rolledOut(x.cluster, "db") && readyCount(x.cluster, "db") === 1;
         },
-        hint: "kubectl logs deploy/db --previous says what Postgres is missing. kubectl set env can read values from a Secret.",
+        hints: [
+          "The Pod starts, then exits within seconds, again and again. A program usually says why it quit before it does. Look at where a container's output goes.",
+          "`kubectl logs deploy/db --previous` prints the output of the run that crashed.",
+          "Postgres says `Database is uninitialized and superuser password is not specified` and asks for `POSTGRES_PASSWORD`. The container has no such variable, although the Secret `db-credentials` already holds one.",
+          "Give the Deployment's container an environment variable that is filled from the Secret, not a literal value. The `set env` subcommand can read it from a Secret. Check the key name the Secret uses.",
+        ],
         solution: { commands: ["kubectl set env deployment/db --from=secret/db-credentials"] },
       },
     ],
@@ -191,9 +219,9 @@ export const CHALLENGES: Challenge[] = [
     slug: "readiness-wrong-port",
     difficulty: "medium",
     track: "workloads",
-    title: "Health checks gone wrong",
-    summary: "Every Pod is Running, none is Ready, and the Service is empty.",
-    brief: "We added health checks to `web` this morning. Since then every Pod shows `0/1` under READY and the `web` Service sends traffic nowhere. nginx itself looks fine in the logs. Keep the readiness probe, but make it correct.",
+    title: "Running, but not serving",
+    summary: "Every Pod is Running, none shows Ready, and traffic goes nowhere.",
+    brief: "Since this morning's change to `web`, every Pod shows `0/1` under READY and the `web` Service sends traffic nowhere. nginx itself looks fine in the logs. The Deployment must keep a readiness probe.",
     minutes: 6,
     concepts: ["Readiness probe", "EndpointSlices"],
     setup: (c) => {
@@ -206,7 +234,12 @@ export const CHALLENGES: Challenge[] = [
         title: "All web Pods Ready and behind the Service",
         body: "All 3 `web` Pods are Ready and receive traffic from the Service, and they still have a readiness probe.",
         check: (x) => readyCount(x.cluster, "web") === 3 && endpointCount(x.cluster, "web") === 3 && podsWith(x.cluster, "app", "web").every((p) => !!p.spec?.containers[0].readinessProbe),
-        hint: "kubectl describe pod shows the probe and why it fails. Which port does nginx listen on?",
+        hints: [
+          "Nothing is crashing. The Pods are Running but not Ready, so the Service sends them no traffic. Something in the Pod decides when it counts as ready. Find where that is defined.",
+          "`kubectl describe pods -l app=web` shows the probe settings and the latest warning. `kubectl get endpoints web` shows which Pods the Service uses.",
+          "The warning says `Readiness probe failed: Get \"http://...:8080/\": ... connection refused`, and the Service has no endpoints. The probe checks port 8080, but nginx listens on port 80 by default.",
+          "Keep the probe and correct the port it checks. The probe is part of the Deployment's Pod template, so a rollout replaces the Pods.",
+        ],
         solution: { commands: [`kubectl patch deployment web -p '{"spec":{"template":{"spec":{"containers":[{"name":"web","readinessProbe":{"httpGet":{"path":"/","port":80}}}]}}}}'`] },
       },
     ],
@@ -216,8 +249,8 @@ export const CHALLENGES: Challenge[] = [
     difficulty: "medium",
     track: "config",
     title: "Pending forever",
-    summary: "A small app that the scheduler can't find room for.",
-    brief: "`report` has been Pending for an hour. It's a small reporting app that idles at about 50m CPU and 20Mi of memory. Nobody knows who sized it.",
+    summary: "A small app that has been Pending for an hour.",
+    brief: "`report` has been Pending for an hour. It's a small reporting app that idles at about 50m CPU and 20Mi of memory.",
     minutes: 5,
     concepts: ["Resource requests", "FailedScheduling"],
     setup: (c) => deployment(c, "report", "nginx:1.27", 2, "default", { resources: { requests: { cpu: "6", memory: "256Mi" } } }),
@@ -227,7 +260,12 @@ export const CHALLENGES: Challenge[] = [
         title: "Both report Pods Running",
         body: "Both `report` Pods are Running and Ready.",
         check: (x) => rolledOut(x.cluster, "report") && readyCount(x.cluster, "report") === 2,
-        hint: "kubectl describe pod on a Pending Pod: the scheduler explains why no Node fits. Compare with kubectl describe node.",
+        hints: [
+          "The Pods never started anywhere. They sit Pending, which is the scheduler's decision and not the container's. Look for what the scheduler says about the Nodes it tried.",
+          "`kubectl describe pods -l app=report` shows the scheduler's message in the Events. `kubectl describe nodes` shows how much each Node has to give.",
+          "The message says `Insufficient cpu`. The Pods request `cpu: 6`, and each worker has far less than that allocatable. The scheduler places Pods by what they request, not by what they use.",
+          "Lower the requests to something close to what the app really uses, with a little headroom. The brief gives the usage.",
+        ],
         solution: { commands: ["kubectl set resources deployment report --requests=cpu=100m,memory=64Mi"] },
       },
     ],
@@ -237,9 +275,9 @@ export const CHALLENGES: Challenge[] = [
     start: ["kubectl get pvc", "kubectl get storageclass"],
     difficulty: "medium",
     track: "storage",
-    title: "Copied from another cluster",
-    summary: "A Pod waiting on a claim that can never be provisioned.",
-    brief: "`cache` (Redis) is Pending. Its manifests were copied from the production cluster, which has a StorageClass called `fast-ssd`. This cluster only has the default one.",
+    title: "The cache won't start",
+    summary: "A cache Pod that has been Pending since it was deployed.",
+    brief: "`cache` (Redis) has been Pending since it was deployed here yesterday. Its data must stay on a persistent volume.",
     minutes: 7,
     concepts: ["PersistentVolumeClaim", "StorageClass", "ProvisioningFailed"],
     setup: (c) => {
@@ -268,7 +306,12 @@ export const CHALLENGES: Challenge[] = [
             const claim = p.spec?.volumes?.find((v) => v.persistentVolumeClaim)?.persistentVolumeClaim?.claimName;
             return !!claim && obj<PersistentVolumeClaim>(x.cluster, "PersistentVolumeClaim", claim)?.status?.phase === "Bound";
           }),
-        hint: "A claim's storageClassName can't be changed after it's created. You'll need a new claim: delete the old one, or give the new one another name.",
+        hints: [
+          "The Pod is Pending, and the scheduler has no complaint about the Nodes. It is waiting on something the Pod mounts. Follow the volume back to the object that should provide it.",
+          "`kubectl describe pvc data` shows the claim's Events. `kubectl get storageclass` lists the classes this cluster has.",
+          "The claim's Events say `storageclass.storage.k8s.io \"fast-ssd\" not found`. Only `standard` exists here, so nothing can provision the volume and the claim stays Pending.",
+          "A claim's storage class can't be changed after it is created, so replace the claim. Create one that uses the cluster's class, or leaves the class out to get the default. If you give it a new name, point the Deployment at it.",
+        ],
         solution: { commands: ["kubectl delete pvc data"], yaml: CACHE_FIXED },
       },
     ],
@@ -279,8 +322,8 @@ export const CHALLENGES: Challenge[] = [
     difficulty: "medium",
     track: "security",
     title: "The pipeline is Forbidden",
-    summary: "RBAC that looks right, for a ServiceAccount that still can't do its job.",
-    brief: "The deploy pipeline runs as ServiceAccount `deployer` in namespace `apps`. Every run fails with `deployments.apps \"web\" is forbidden: User \"system:serviceaccount:apps:deployer\" cannot patch resource \"deployments\"`. (That `system:serviceaccount:apps:deployer` string is how Kubernetes names the ServiceAccount `deployer` in namespace `apps`.) A Role and a RoleBinding were set up for it last week. It must not get more access than that Role gives.",
+    summary: "A deploy pipeline whose runs all fail with Forbidden.",
+    brief: "The deploy pipeline runs as ServiceAccount `deployer` in namespace `apps`. Every run fails with `deployments.apps \"web\" is forbidden: User \"system:serviceaccount:apps:deployer\" cannot patch resource \"deployments\"`. (That `system:serviceaccount:apps:deployer` string is how Kubernetes names the ServiceAccount `deployer` in namespace `apps`.) It must be able to patch Deployments in `apps`, and must not get more access than that.",
     minutes: 7,
     concepts: ["RBAC", "RoleBinding", "kubectl auth can-i"],
     setup: (c) => {
@@ -296,19 +339,24 @@ export const CHALLENGES: Challenge[] = [
         title: "deployer may patch Deployments in apps",
         body: "`system:serviceaccount:apps:deployer` may patch Deployments in `apps`, and still may not read Secrets there.",
         check: (x) => can(x.cluster, "system:serviceaccount:apps:deployer", "patch", "deployments", "apps", "apps") && !can(x.cluster, "system:serviceaccount:apps:deployer", "get", "secrets", "apps"),
-        hint: "kubectl auth can-i patch deployments -n apps --as=system:serviceaccount:apps:deployer tests it. Then look closely at the RoleBinding's subjects.",
+        hints: [
+          "The Role grants the right verbs on the right resource, so the permission itself looks fine. A permission only counts for whoever it is bound to. Look at who the binding names.",
+          "`kubectl auth can-i patch deployments -n apps --as=system:serviceaccount:apps:deployer` asks the API server directly. `kubectl describe rolebinding deployer-binding -n apps` lists the subjects.",
+          "The answer is `no`. The binding's subject is the ServiceAccount `deployer` in the namespace `default`, not `apps`. A ServiceAccount is identified by its namespace as well as its name, so the binding grants nothing to `apps:deployer`.",
+          "Correct the namespace of the subject so the binding names the ServiceAccount in `apps`. Then ask can-i again, and check that reading Secrets is still refused.",
+        ],
         solution: { commands: ["kubectl delete rolebinding deployer-binding -n apps", "kubectl create rolebinding deployer-binding --role=deploy-manager --serviceaccount=apps:deployer -n apps"] },
       },
     ],
   },
   {
     slug: "egress-dns",
-    start: ["kubectl get networkpolicy", "kubectl describe networkpolicy"],
+    start: ["kubectl get networkpolicy", "kubectl describe networkpolicy", "kubectl exec deploy/frontend -- wget -qO- --timeout=2 http://backend"],
     difficulty: "hard",
     track: "networking",
-    title: "Locked down too far",
-    summary: "An egress policy that blocks more than it meant to.",
-    brief: "Security added an egress NetworkPolicy for `frontend` yesterday. Since then frontend can't reach backend. This fails:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://backend\n```\n\nFrontend must stay locked down (it may not reach the internet), but it has to reach backend by name.",
+    title: "Frontend can't reach backend",
+    summary: "A request from frontend to backend has failed since yesterday.",
+    brief: "Since yesterday's security change, a request from a frontend Pod to `http://backend` fails. Frontend must stay locked down (it may not reach the internet), but it has to reach backend.",
     minutes: 10,
     concepts: ["NetworkPolicy", "Egress", "DNS"],
     setup: (c) => {
@@ -332,7 +380,12 @@ export const CHALLENGES: Challenge[] = [
           if (!fe) return false;
           return isIsolated(x.cluster, fe, "Egress") && dnsAllowed(x.cluster, fe) && reaches(x.cluster, fe, "backend", 80) && !egressAllowed(x.cluster, fe, { ip: "93.184.216.34" }, 443).ok;
         },
-        hint: "Run the wget and read the error closely: is it the connection that fails, or something before it? Names are looked up by CoreDNS, in kube-system, on port 53.",
+        hints: [
+          "The request never gets as far as the backend. Before a client can connect to a name, something has to turn that name into an address. Read the error again and decide which of those two steps failed.",
+          "`kubectl exec deploy/frontend -- nslookup backend` tests the name lookup on its own. `kubectl describe networkpolicy frontend-egress` shows what frontend is allowed to reach.",
+          "The lookup times out, and the policy allows only Pods labelled `app=backend` on port 80. Names are resolved by CoreDNS in `kube-system`, on port 53. Once a policy restricts egress, anything it doesn't list is blocked, DNS included.",
+          "Keep the rule for backend and add a second one that lets frontend reach the DNS Pods on port 53, over UDP and TCP. Select them by namespace and label: `kubectl get pods -n kube-system --show-labels` shows both. Don't open egress to everything.",
+        ],
         solution: { yaml: FRONTEND_EGRESS_FIXED },
       },
     ],
@@ -342,9 +395,9 @@ export const CHALLENGES: Challenge[] = [
     start: ["kubectl get nodes", "kubectl describe nodes"],
     difficulty: "hard",
     track: "operations",
-    title: "Nothing schedules after maintenance",
-    summary: "Two Nodes left half-finished by last night's maintenance.",
-    brief: "Last night's Node maintenance is over, but `web` is stuck Pending and nothing new gets scheduled anywhere. The on-call engineer went home before finishing the checklist. Don't work around it with tolerations: put the workers back the way they were.",
+    title: "Nothing new will start",
+    summary: "A Deployment stuck Pending, and no new Pod lands anywhere.",
+    brief: "Since last night `web` has been stuck Pending, and nothing new gets scheduled on either worker. Don't give `web` special treatment to get around it.",
     minutes: 8,
     concepts: ["Taints", "Cordon", "FailedScheduling"],
     setup: (c) => {
@@ -366,7 +419,12 @@ export const CHALLENGES: Challenge[] = [
           });
           return open && readyCount(x.cluster, "web") === 4 && allPodsOf(dep(x.cluster, "web"), (s) => !s?.template.spec.tolerations?.length);
         },
-        hint: "kubectl describe pod on a Pending Pod names two different reasons. kubectl get nodes and kubectl describe node show them.",
+        hints: [
+          "Pods stay Pending and nothing schedules anywhere. No Node is down, but two of them behave differently from the rest. Look at what each Node says about itself, and whether it will accept new Pods.",
+          "`kubectl get nodes` shows each Node's status. `kubectl describe node worker-1` and `kubectl describe node worker-2` show their taints. `kubectl describe pods -l app=web` shows the scheduler's message.",
+          "`worker-2` is `Ready,SchedulingDisabled`: someone cordoned it. `worker-1` has the taint `maintenance=true:NoSchedule`, which keeps out every Pod that doesn't tolerate it. The scheduler counts both: `1 node(s) were unschedulable, 2 node(s) had untolerated taint(s)`. The control plane's own taint is the second one, and it stays.",
+          "Undo each half of the maintenance on its own Node. Remove the taint from `worker-1` and uncordon `worker-2`. Leave the control plane alone.",
+        ],
         solution: { commands: ["kubectl taint nodes worker-1 maintenance=true:NoSchedule-", "kubectl uncordon worker-2"] },
       },
     ],

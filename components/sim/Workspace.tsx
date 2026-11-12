@@ -1,14 +1,19 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { Namespace, Node, Pod, Service } from "@/lib/engine";
+import { controlPlaneHealth, type Namespace, type Node, type Pod, type Service } from "@/lib/engine";
 import { SYSTEM_NAMESPACES } from "@/lib/engine/bootstrap";
 import type { SimStore } from "@/lib/sim/useSimulation";
 import { podCategory } from "@/lib/sim/status";
 import { explainEvent, isNarrated } from "@/lib/sim/explain";
 import { age } from "@/lib/sim/status";
+import { controlPlaneNote, controlPlaneStatus, unreachableNote } from "@/lib/sim/controlplane";
+import { useLastKnown } from "./lastKnown";
 import { ClusterView, type Selection } from "./ClusterView";
 import { CommandLog, EventsTable, ResourceTable } from "./Inspector";
+import { Splitter } from "./Splitter";
+import { DOCK_SPLIT, SIDE_SPLIT, clampShare, parseShare, type SplitSpec } from "./split";
+import { useStored } from "./useStored";
 import { Terminal } from "./Terminal";
 import { ClusterText } from "./ClusterText";
 import { Editor } from "./Editor";
@@ -226,6 +231,8 @@ interface Props {
   /** Show the drag-to-create palette. */
   palette?: boolean;
   layout?: Layout;
+  /** Practice mode (Incidents, Challenges): the terminal shows no example command. */
+  quiet?: boolean;
   /** The screen's own panel: a Lesson's steps, a Challenge's goals. */
   side?: React.ReactNode;
   sideLabel?: string;
@@ -236,7 +243,7 @@ interface Props {
   sideAboveOnMobile?: boolean;
 }
 
-export function Workspace({ sim, selection, onSelect, showSystem = false, tabs = ["terminal", "editor", "resources", "events", "commands"], extraTabs = [], initialTab, requestTab, overlay, narration = true, mobileView = "canvas", interactive = true, palette = false, layout = "split", side, sideLabel = "Steps", inspector, onCloseInspector, sideAboveOnMobile = false }: Props) {
+export function Workspace({ sim, selection, onSelect, showSystem = false, tabs = ["terminal", "editor", "resources", "events", "commands"], extraTabs = [], initialTab, requestTab, overlay, narration = true, mobileView = "canvas", interactive = true, palette = false, layout = "split", quiet = false, side, sideLabel = "Steps", inspector, onCloseInspector, sideAboveOnMobile = false }: Props) {
   const allTabs: string[] = [...tabs, ...extraTabs.map((t) => t.id)];
   const [tab, setTab] = useState<string>(initialTab ?? allTabs[0]);
   const [open, setOpen] = useState(allTabs.length > 0);
@@ -246,6 +253,14 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
   const canvasSize = useSize(canvasEl);
   const canvasW = canvasSize.w;
   const stackH = useSize(stackEl).h;
+  // Split layout: where the two draggable splitters sit, and a counter that re-fits the diagram when one is released.
+  const [refit, setRefit] = useState(0);
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
+  const [colEl, setColEl] = useState<HTMLDivElement | null>(null);
+  const mainSize = useSize(mainEl);
+  const colSize = useSize(colEl);
+  const sideSplit = useShare(SIDE_SPLIT);
+  const dockSplit = useShare(DOCK_SPLIT);
   const desktop = useDesktop();
   const spotlight = desktop && layout === "spotlight";
   /** A narrow canvas (phones) can't spare a column for the palette: it floats over the diagram. */
@@ -265,7 +280,14 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
     }
   }
 
-  const c = sim.cluster!;
+  const live = sim.cluster!;
+  // While the apiserver does not answer, the canvas keeps the last picture it read and says so (ADR 0003, decision 5).
+  const apiUp = controlPlaneHealth(live).api;
+  const c = useLastKnown(live, apiUp, sim.frameNow);
+  const unreachable = unreachableNote(live, narration);
+  // Practice mode reads the control plane's health from the same picture as everything else (what `get pods` showed); narration reads it live.
+  const health = controlPlaneStatus(narration ? live : c, narration);
+  const cpNote = narration ? controlPlaneNote(health) : undefined;
   const ns = sim.viewNs;
   const inView = (n?: string) => (ns === "*" ? showSystem || !SYSTEM_NAMESPACES.has(n ?? "") : n === ns);
   const events = sim.events.filter((e) => inView(e.metadata.namespace));
@@ -282,7 +304,10 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
   const topLeft = palette ? (paletteOpen ? BESIDE_PALETTE : EDGE + ADD_W + 8) : EDGE;
   const bottomLeft = paletteColumn ? BESIDE_PALETTE : EDGE;
   const summaryW = 300 + (namespaces.length > 1 ? 150 : 0);
-  const showStory = narration && story.length > 0 && canvasW - topLeft - summaryW - EDGE >= 260;
+  const roomForNote = canvasW - topLeft - summaryW - EDGE >= 260;
+  // The apiserver being unreachable is always said; a control-plane cause (narration only) takes the story's place.
+  const banner = unreachable ?? (roomForNote ? cpNote : undefined);
+  const showStory = narration && story.length > 0 && roomForNote && !banner;
   const floatInspector = desktop && !!inspector;
   const inset = {
     top: 52,
@@ -310,9 +335,9 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
 
   // Replicas set from the canvas go through kubectl, so the command shows in the terminal.
   const scale = (kind: "deployment" | "statefulset", n: string, name: string, replicas: number) => sim.exec(`kubectl scale ${kind} ${name} --replicas=${replicas}${n !== "default" ? ` -n ${n}` : ""}`);
-  const view = <ClusterView cluster={c} packets={sim.packets} slots={sim.slots} now={sim.frameNow} selection={selection} onSelect={onSelect} showSystem={showSystem} namespace={ns} inset={inset} perRow={perRow} wrap={wrap} onScale={interactive ? scale : undefined} />;
+  const view = <ClusterView cluster={c} health={health} packets={sim.packets} slots={sim.slots} now={sim.frameNow} selection={selection} onSelect={onSelect} showSystem={showSystem} namespace={ns} inset={inset} perRow={perRow} wrap={wrap} refit={refit} onScale={interactive ? scale : undefined} />;
   const canvas = (
-    <div ref={setCanvasEl} className="relative h-full min-h-0 w-full overflow-hidden">
+    <div ref={setCanvasEl} className={`relative h-full min-h-0 w-full overflow-hidden ${apiUp ? "" : "cv-stale"}`}>
       {interactive ? (
         <DragProvider sim={sim}>
           {view}
@@ -349,11 +374,17 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
         </div>
         {/* Spotlight's bottom edge belongs to the floating card, so the Text view switch sits up here, clear of the diagram. */}
         {spotlight && <TextViewButton on={textView} onClick={() => setTextView(!textView)} />}
+        {banner && (
+          <div data-overlay={unreachable ? "unreachable" : "control-plane"} role="status" className="ml-auto flex min-w-0 max-w-[460px] flex-1 items-center gap-2.5 rounded-lg border border-amber-500/40 bg-paper/95 px-3 py-1.5 text-[13px] shadow-[0_1px_2px_rgb(15_23_42/0.05)]" title={banner}>
+            <span className="h-2 w-2 shrink-0 rounded-full bg-amber-500" />
+            <span className="line-clamp-2 min-w-0 text-ink">{banner}</span>
+          </div>
+        )}
         {showStory && (
           <div data-overlay="narration" className="ml-auto flex min-w-0 max-w-[460px] flex-1 items-center gap-2.5 rounded-lg border border-signal/25 bg-paper/95 px-3 py-1.5 text-[13px] shadow-[0_1px_2px_rgb(15_23_42/0.05)]" title={explainEvent(story[0])}>
             <span className={`h-2 w-2 shrink-0 rounded-full ${story[0].type === "Warning" ? "bg-amber-500" : "bg-signal"}`} />
             <span className="min-w-0 truncate text-ink">{explainEvent(story[0])}</span>
-            <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-soft">{age(c.now - story[0].lastTimestamp)}</span>
+            <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-soft">{age(live.now - story[0].lastTimestamp)}</span>
           </div>
         )}
       </div>
@@ -399,11 +430,11 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
 
   const dockBody = (
     <div id="dock-panel" className={`min-h-0 flex-1 ${tab === "terminal" || tab === "editor" ? "" : "overflow-auto px-4 py-2"} ${extra ? "!p-0" : ""}`}>
-      {tab === "terminal" && <Terminal sim={sim} />}
+      {tab === "terminal" && <Terminal sim={sim} quiet={quiet} />}
       {tab === "editor" && <Editor sim={sim} />}
       {tab === "commands" && <CommandLog log={sim.log} />}
       {tab === "resources" && <ResourceTable c={c} namespace={sim.viewNs === "*" ? sim.namespace : sim.viewNs} />}
-      {tab === "events" && <EventsTable events={events} now={c.now} />}
+      {tab === "events" && <EventsTable events={events} now={live.now} />}
       {extra?.render()}
     </div>
   );
@@ -473,22 +504,59 @@ export function Workspace({ sim, selection, onSelect, showSystem = false, tabs =
   }
 
   // ---------------------------------------------------------------- Split
+  const hasSide = !!sidePanel || allTabs.length > 0;
+  // The gap is 12px on each side of a splitter; the container loses its padding too.
+  const mainW = Math.max(0, mainSize.w - 24 - 12);
+  const sideShare = clampShare(sideSplit.share, mainW, SIDE_SPLIT.min1, SIDE_SPLIT.min2);
+  const sideW = Math.round(mainW * sideShare);
+  const colH = Math.max(0, colSize.h - 12);
+  const dockShare = clampShare(dockSplit.share, colH, DOCK_SPLIT.min1, DOCK_SPLIT.min2);
+  const dockH = Math.round(colH * dockShare);
+  const release = (hook: ReturnType<typeof useShare>, spec: SplitSpec, total: number) => (v: number) => {
+    const clamped = clampShare(v, total, spec.min1, spec.min2);
+    hook.commit(clamped);
+    setRefit((n) => n + 1);
+  };
   return (
-    <main className="flex min-h-0 min-w-0 flex-1 gap-3 bg-canvas p-3">
+    <main ref={setMainEl} className="flex min-h-0 min-w-0 flex-1 gap-3 bg-canvas p-3">
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-2xl border border-ink/10 bg-paper">{canvas}</div>
-      {(sidePanel || allTabs.length > 0) && (
-        <div className={`flex min-h-0 shrink-0 flex-col gap-3 ${sidePanel ? "w-[420px] xl:w-[480px]" : "w-[440px] xl:w-[560px]"}`}>
-          {sidePanel && <div className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-ink/10 bg-paper ${allTabs.length ? "flex-[1_1_55%]" : "flex-1"}`}>{sidePanel}</div>}
-          {allTabs.length > 0 && (
-            <div className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-ink/10 bg-paper ${sidePanel ? "flex-[1_1_45%]" : "flex-1"}`}>
-              {dockTabs(false)}
-              {dockBody}
-            </div>
-          )}
-        </div>
+      {hasSide && (
+        <>
+          <Splitter orientation="vertical" label="Resize the cluster and the side panel" share={sideShare} total={mainW} onChange={sideSplit.set} onCommit={release(sideSplit, SIDE_SPLIT, mainW)} onReset={() => { sideSplit.reset(); setRefit((n) => n + 1); }} />
+          <div ref={setColEl} className="flex min-h-0 shrink-0 flex-col gap-3" style={{ width: mainSize.w ? sideW : undefined, minWidth: mainSize.w ? undefined : 420 }}>
+            {sidePanel && <div className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-ink/10 bg-paper ${allTabs.length ? "" : "flex-1"}`} style={allTabs.length ? { flex: "1 1 0" } : undefined}>{sidePanel}</div>}
+            {sidePanel && allTabs.length > 0 && (
+              <Splitter orientation="horizontal" label="Resize the panel and the terminal" share={dockShare} total={colH} onChange={dockSplit.set} onCommit={release(dockSplit, DOCK_SPLIT, colH)} onReset={dockSplit.reset} />
+            )}
+            {allTabs.length > 0 && (
+              <div className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-ink/10 bg-paper ${sidePanel ? "" : "flex-1"}`} style={sidePanel ? { flex: "0 0 auto", height: colSize.h ? dockH : undefined, minHeight: colSize.h ? undefined : 240 } : undefined}>
+                {dockTabs(false)}
+                {dockBody}
+              </div>
+            )}
+          </div>
+        </>
       )}
     </main>
   );
+}
+
+/** A splitter's share: the stored one, or the one being dragged right now; saved when the drag settles. */
+function useShare(spec: SplitSpec) {
+  const [raw, setRaw] = useStored(spec.key);
+  const [live, setLive] = useState<number | null>(null);
+  return {
+    share: live ?? parseShare(raw, spec.fallback),
+    set: setLive,
+    commit: (v: number) => {
+      setLive(null);
+      setRaw(String(Math.round(v * 1000) / 1000));
+    },
+    reset: () => {
+      setLive(null);
+      setRaw(null);
+    },
+  };
 }
 
 function TextViewButton({ on, onClick }: { on: boolean; onClick: () => void }) {

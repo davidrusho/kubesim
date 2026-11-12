@@ -8,6 +8,7 @@ import { AppHeader } from "../AppHeader";
 import { DIFFICULTY } from "./difficulty";
 import { challengeKey, examKey, resetAllProgress, useProgress } from "./progress";
 import { bestIncident, dailyResult, dailyStreak } from "./incidentProgress";
+import { loadUsage, usageSummary } from "./challengeUsage";
 
 function Shell({ title, intro, children }: { title: string; intro: string; children: React.ReactNode }) {
   return (
@@ -119,8 +120,26 @@ export function LessonIndex() {
   );
 }
 
+/** One Challenge on the index. Its concepts name the cause (an ImagePullBackOff, a kubectl command), so they stay hidden until the Challenge is solved. */
+export function ChallengeRow({ c, done, mounted }: { c: (typeof CHALLENGES)[number]; done: boolean; mounted: boolean }) {
+  return (
+    <Link href={`/challenges/${c.slug}`} className={ROW}>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-3">
+          <h3 className="text-[17px] font-medium underline-offset-4 group-hover:underline">{c.title}</h3>
+          {done && <span className="text-[13px] font-medium">✓ Solved{mounted ? ` ${usageSummary(loadUsage(c.slug))}` : ""}</span>}
+        </div>
+        <p className="mt-0.5 text-[14.5px] leading-snug text-ink-soft">{c.summary}</p>
+        {done && <p className="mt-1.5 font-mono text-[11.5px] text-ink-soft">{c.concepts.join(" · ")}</p>}
+      </div>
+      <span className="shrink-0 text-[13px] text-ink-soft">{c.minutes} min</span>
+    </Link>
+  );
+}
+
 export function ChallengeIndex() {
   const progress = useProgress();
+  const mounted = useMounted();
   const solved = CHALLENGES.filter((c) => (progress[challengeKey(c.slug)]?.done ?? 0) >= c.steps.length).length;
   return (
     <Shell title="Challenges" intro={`Each challenge starts with something wrong and a goal, like a ticket from a colleague. There are no steps: investigate with kubectl, find the cause, fix it. Hints, and the fix itself, are there if you're stuck. ${solved} of ${CHALLENGES.length} solved.`}>
@@ -133,23 +152,9 @@ export function ChallengeIndex() {
               {DIFFICULTY[level].label}
             </h2>
             <div className={RULED}>
-              {list.map((c) => {
-                const p = progress[challengeKey(c.slug)];
-                const done = !!p && p.done >= c.steps.length;
-                return (
-                  <Link key={c.slug} href={`/challenges/${c.slug}`} className={ROW}>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-3">
-                        <h3 className="text-[17px] font-medium underline-offset-4 group-hover:underline">{c.title}</h3>
-                        {done && <span className="text-[13px] font-medium">✓ Solved</span>}
-                      </div>
-                      <p className="mt-0.5 text-[14.5px] leading-snug text-ink-soft">{c.summary}</p>
-                      <p className="mt-1.5 font-mono text-[11.5px] text-ink-soft">{c.concepts.join(" · ")}</p>
-                    </div>
-                    <span className="shrink-0 text-[13px] text-ink-soft">{c.minutes} min</span>
-                  </Link>
-                );
-              })}
+              {list.map((c) => (
+                <ChallengeRow key={c.slug} c={c} done={(progress[challengeKey(c.slug)]?.done ?? 0) >= c.steps.length} mounted={mounted} />
+              ))}
             </div>
           </section>
         );
@@ -230,7 +235,7 @@ export function IncidentIndex() {
                 </div>
                 <p className="mt-0.5 text-[14.5px] leading-snug text-ink-soft">{inc.brief}</p>
               </div>
-              <span className="shrink-0 font-mono text-[12.5px] text-ink-soft">{best ? `best ${clock(best.ms)}` : ""}</span>
+              <span className="shrink-0 font-mono text-[12.5px] text-ink-soft">{best ? `best ${clock(best.ms)} · ${best.sawFix ? "fix shown" : best.hints ? `${best.hints} hint${best.hints > 1 ? "s" : ""}` : "no hints"}` : ""}</span>
             </Link>
           );
         })}

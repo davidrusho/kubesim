@@ -1,7 +1,7 @@
 // Drag-and-drop on the Cluster View. Every drop runs through the same Cluster
 // API as kubectl and records the equivalent command, so dragging teaches the CLI.
 
-import { ApiError, type Cluster, type Deployment, type Node, type Pod, type Service } from "@/lib/engine";
+import { ApiError, apiServerRefusal, type Cluster, type Deployment, type Node, type Pod, type Service } from "@/lib/engine";
 import * as A from "./actions";
 import { BLUEPRINTS } from "./blueprints";
 import { RAW_KIND as KIND_OF, canDelete, deleteCommand, deleteNote, type ObjectKind } from "./objects";
@@ -105,6 +105,11 @@ export function performDrop(sim: SimStore, item: DragItem, t: Target): DropResul
                 : "Drop it on the trash to delete it.";
     return { ok: false, note: hint };
   }
+
+  // The apiserver does not answer: a drop that would write through the API fails as kubectl does, and nothing changes (ADR 0003, decision 5).
+  // Chaos on a Node is the exception: it is power, not an API call.
+  const refusal = apiServerRefusal(c);
+  if (refusal && !(item.kind === "tool" && item.what === "chaos" && t.type === "node")) return { ok: false, note: refusal };
 
   // ---- blueprints: apply a manifest, saved in the Editor
   if (item.kind === "blueprint") {

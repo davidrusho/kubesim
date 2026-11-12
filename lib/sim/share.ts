@@ -44,6 +44,10 @@ export const SHARE_LIMITS = {
   objects: 3000,
   pods: 600,
   nodes: 50,
+  /** Per Node host. */
+  hostFiles: 200,
+  fileBytes: 64 * 1024,
+  journalLines: 300,
 };
 
 const TOO_LARGE = "That link is too large to be a kubesim cluster.";
@@ -88,6 +92,50 @@ function parseSafe(text: string): unknown {
 
 const isName = (v: unknown) => typeof v === "string" && v.length > 0 && v.length <= 253;
 
+const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+const str = (v: unknown, max = 1000) => typeof v === "string" && v.length <= max;
+const optStr = (v: unknown, max = 1000) => v === undefined || str(v, max);
+const optNum = (v: unknown) => v === undefined || num(v);
+
+function soundService(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  const f = v.failure;
+  return (
+    typeof v.enabled === "boolean" &&
+    (v.active === "active" || v.active === "inactive" || v.active === "failed" || v.active === "activating") &&
+    num(v.since) &&
+    num(v.restarts) &&
+    num(v.pid) &&
+    str(v.invocation, 100) &&
+    optNum(v.duration) &&
+    optStr(v.execStart) &&
+    optStr(v.cmdline) &&
+    optStr(v.staticPodPath) &&
+    (f === undefined || (isRecord(f) && str(f.status, 100) && num(f.retryAt)))
+  );
+}
+
+/** A host block with every field the engine reads of the right type, and counts and sizes a cluster worth sharing never reaches. */
+function soundHost(h: unknown): boolean {
+  if (!isRecord(h) || (h.role !== "control-plane" && h.role !== "worker") || !num(h.nextPid) || !num(h.seq)) return false;
+  if (!isRecord(h.services) || !soundService(h.services.kubelet) || !soundService(h.services.containerd)) return false;
+  if (!isRecord(h.files) || Object.keys(h.files).length > SHARE_LIMITS.hostFiles) return false;
+  for (const [p, f] of Object.entries(h.files)) {
+    if (!str(p, 500) || !isRecord(f) || !str(f.content, SHARE_LIMITS.fileBytes) || !num(f.mode) || !num(f.mtime) || (f.opaque !== undefined && typeof f.opaque !== "boolean")) return false;
+  }
+  if (!isRecord(h.journal) || Object.keys(h.journal).length > 4) return false;
+  for (const l of Object.values(h.journal)) {
+    if (!Array.isArray(l) || l.length > SHARE_LIMITS.journalLines || !l.every((x) => isRecord(x) && num(x.t) && str(x.text, 4000))) return false;
+  }
+  if (!isRecord(h.loaded) || Object.keys(h.loaded).length > 50 || !Object.values(h.loaded).every((t) => str(t, SHARE_LIMITS.fileBytes))) return false;
+  if (!isRecord(h.static) || Object.keys(h.static).length > SHARE_LIMITS.hostFiles) return false;
+  for (const e of Object.values(h.static)) {
+    if (!isRecord(e) || !str(e.hash, 100) || !optStr(e.pod, 600) || !optNum(e.createAt) || !optStr(e.logged, 200)) return false;
+    if (e.bad !== undefined && !(isRecord(e.bad) && str(e.bad.err, 4000) && num(e.bad.loggedAt))) return false;
+  }
+  return true;
+}
+
 /** The parts of a snapshot the engine can't start without, with sane sizes. */
 function checkCluster(v: unknown): ClusterState {
   if (!isRecord(v) || !isRecord(v.config) || !isRecord(v.objects) || !isRecord(v.pods) || !isRecord(v.nodes)) throw new LinkError(NOT_A_CLUSTER);
@@ -108,6 +156,8 @@ function checkCluster(v: unknown): ClusterState {
   }
   for (const [, p] of pods) if (!isRecord(p) || !isRecord(p.containers)) throw new LinkError(NOT_A_CLUSTER);
   for (const [, n] of nodes) if (!isRecord(n)) throw new LinkError(NOT_A_CLUSTER);
+  // Node hosts (ADR 0003): the engine reads their services, files and journals on every step, so a block of the wrong shape or size is dropped and rebuilt as the defaults.
+  if (v.hosts !== undefined && !(isRecord(v.hosts) && Object.keys(v.hosts).length <= SHARE_LIMITS.nodes && Object.values(v.hosts).every(soundHost))) delete v.hosts;
   // Card positions: a capped map of finite numbers, or dropped.
   if (v.layout !== undefined) {
     const ok = isRecord(v.layout) && Object.keys(v.layout).length <= SHARE_LIMITS.objects && Object.values(v.layout).every((p) => isRecord(p) && Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x as number) < 1e5 && Math.abs(p.y as number) < 1e5);

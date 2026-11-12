@@ -20,6 +20,9 @@ import { clone, deepEqual, Rng, randSuffix, SIM_EPOCH } from "./util";
 import { LAST_APPLIED, lastApplied, threeWayMerge } from "./apply";
 import { KINDS } from "./kinds";
 import { runKubelets } from "./controllers/kubelet";
+import { adoptStaticPods, apiServerRefusal, controlPlaneHealth, isStaticPod, recreateMirror, runStaticPods, trackEtcd } from "./controllers/staticpods";
+import { buildHost, type HostState } from "./host";
+import { runServices, seedJournal } from "./hostservices";
 import { runScheduler } from "./controllers/scheduler";
 import { runReplicaSets } from "./controllers/replicaset";
 import { runDeployments } from "./controllers/deployment";
@@ -75,6 +78,12 @@ export const DEFAULT_CONFIG: ClusterConfig = {
   defaultTolerationSeconds: 300,
   systemPods: true,
 };
+
+/** The two Nodes the CKA exam environment has, for Incidents that work on hosts (ADR 0003, decision 7). The default cluster keeps kind's names. */
+export const EXAM_NODES: NodeConfig[] = [
+  { name: "controlplane", role: "control-plane" },
+  { name: "node01", role: "worker" },
+];
 
 export type ContainerPhase =
   | "pulling"
@@ -180,6 +189,8 @@ export interface ClusterState {
   objects: Record<string, AnyObject>;
   pods: Record<string, PodRuntime>;
   nodes: Record<string, NodeRuntime>;
+  /** The host behind each Node (ADR 0003): systemd services, files by absolute path, a journal. Saves from before it existed get default hosts. */
+  hosts: Record<string, HostState>;
   /** Logs keyed by `${podUid}/${container}/${restartCount}`. */
   logs: Record<string, LogLine[]>;
   nextClusterIp: number;
@@ -193,6 +204,8 @@ export interface ClusterState {
   hpa: Record<string, { recs: { t: number; n: number }[]; events?: { t: number; delta: number }[] }>;
   /** Controller timers and one-shot markers: key → sim ms. */
   timers: Record<string, number>;
+  /** Since when etcd has not been running, while the apiserver rides it out (ADR 0003, decision 4). Absent while etcd is up. */
+  etcdDownSince?: number;
   lbNext: number;
   eventSeq: number;
   /** Separate generator for load-balancing picks, so curl traffic never shifts generated names. */
@@ -218,7 +231,7 @@ export type ClusterSignal =
 export class ApiError extends Error {
   constructor(
     message: string,
-    public reason: "NotFound" | "AlreadyExists" | "Invalid" | "BadRequest" | "Forbidden" | "Conflict",
+    public reason: "NotFound" | "AlreadyExists" | "Invalid" | "BadRequest" | "Forbidden" | "Conflict" | "Unreachable",
   ) {
     super(message);
   }
@@ -274,6 +287,14 @@ export class Cluster {
       this.state = clone(configOrState);
       // Snapshots from before these fields existed.
       this.state.volumes ??= {};
+      this.state.hosts ??= {};
+      for (const [name, rt] of Object.entries(this.state.nodes)) {
+        if (this.state.hosts[name]) continue;
+        const role = this.state.config.nodes.find((n) => n.name === name)?.role ?? "worker";
+        this.state.hosts[name] = buildHost(this, name, role, rt.index, this.state.config.systemPods);
+        seedJournal(this, name);
+        adoptStaticPods(this, name);
+      }
       this.state.metrics ??= { at: 0, pods: {}, nodes: {} };
       this.state.hpa ??= {};
       this.state.timers ??= {};
@@ -292,6 +313,7 @@ export class Cluster {
         objects: {},
         pods: {},
         nodes: {},
+        hosts: {},
         logs: {},
         nextClusterIp: 1,
         scheduleAttempts: {},
@@ -367,27 +389,47 @@ export class Cluster {
 
   private runControllers(): void {
     this.state.now += STEP_MS;
+    // Each control-plane component gates what it owns (ADR 0003, decision 4). The node side below it
+    // (services, static Pods, the kubelet's containers) runs whatever the control plane is doing.
+    // kube-controller-manager owns the ReplicaSet, Deployment, StatefulSet, DaemonSet, Job, CronJob,
+    // endpoints, endpointslice, node-lifecycle, HPA, disruption, resource-quota, garbage-collector, PV and
+    // cluster-role-aggregation controllers: they are named in the `--controllers` list of
+    // https://kubernetes.io/docs/reference/command-line-tools-reference/kube-controller-manager/
+    // (replicaset-controller, deployment-controller, statefulset-controller, daemonset-controller, job-controller,
+    // cronjob-controller, endpoints-controller, endpointslice-controller, node-lifecycle-controller,
+    // horizontal-pod-autoscaler-controller, disruption-controller, resourcequota-controller,
+    // garbage-collector-controller, persistentvolume-binder-controller, clusterrole-aggregation-controller,
+    // serviceaccount-controller, root-ca-certificate-publisher-controller). Metrics and customers' traffic are not.
+    runServices(this);
+    runStaticPods(this);
     runKubelets(this);
-    runNodeLifecycle(this);
-    runStorage(this);
-    runScheduler(this);
-    runEndpoints(this);
-    runEndpointSlices(this);
-    runReplicaSets(this);
-    runDeployments(this);
-    runStatefulSets(this);
-    runDaemonSets(this);
-    runJobs(this);
-    runCronJobs(this);
+    trackEtcd(this);
+    const cp = controlPlaneHealth(this);
+    if (cp.kcm) runNodeLifecycle(this);
+    if (cp.kcm) runStorage(this);
+    if (cp.scheduler) runScheduler(this);
+    if (cp.kcm) {
+      runEndpoints(this);
+      runEndpointSlices(this);
+      runReplicaSets(this);
+      runDeployments(this);
+      runStatefulSets(this);
+      runDaemonSets(this);
+      runJobs(this);
+      runCronJobs(this);
+    }
+    // Customers' traffic and the metrics scrape do not go through the API.
     runLoad(this);
     runMetrics(this);
-    runHPAs(this);
-    runNetworkControllers(this);
-    runDisruptionController(this);
-    runClusterRoleAggregation(this);
-    if (this.state.now % 1000 === 0) runQuotaController(this);
-    // The garbage collector works from an informer cache in real clusters; every 500ms is plenty.
-    if (this.state.now % 500 === 0) runGarbageCollector(this);
+    if (cp.kcm) runHPAs(this);
+    if (cp.api) runNetworkControllers(this, cp.kcm);
+    if (cp.kcm) {
+      runDisruptionController(this);
+      runClusterRoleAggregation(this);
+      if (this.state.now % 1000 === 0) runQuotaController(this);
+      // The garbage collector works from an informer cache in real clusters; every 500ms is plenty.
+      if (this.state.now % 500 === 0) runGarbageCollector(this);
+    }
     this.state.rng = this.rng.state;
     this.state.trafficRng = this.trafficRng.state;
   }
@@ -507,6 +549,12 @@ export class Cluster {
     this.changed = true;
   }
 
+  /** A host file or service changed: autosave must notice although no API object did (it compares the revision this bumps). */
+  hostChanged(): void {
+    this.state.layoutRev = (this.state.layoutRev ?? 0) + 1;
+    this.changed = true;
+  }
+
   // ---------- events ----------
 
   record(
@@ -592,7 +640,15 @@ export class Cluster {
       );
   }
 
+  /** A write from the Learner while the apiserver does not answer fails as kubectl does (ADR 0003, decision 5); controllers' own calls never reach this. */
+  private requireApi(): void {
+    if (this.inStep) return;
+    const refusal = apiServerRefusal(this);
+    if (refusal) throw new ApiError(refusal, "Unreachable");
+  }
+
   create<T extends KubeObject>(input: NewObject<T> | T, opts: RequestOptions = {}): T {
+    this.requireApi();
     const obj = clone(input) as unknown as AnyObject;
     obj.apiVersion ??= API_VERSIONS[obj.kind];
     obj.metadata = { ...(obj.metadata ?? {}) } as AnyObject["metadata"];
@@ -622,13 +678,15 @@ export class Cluster {
     checkQuota(this, obj);
     for (const w of unsupportedWarnings(obj)) this.warn(w);
     const stored = this.put(obj);
-    if (obj.kind === "Namespace") ensureNamespaceDefaults(this, meta.name);
+    // The default ServiceAccount and kube-root-ca.crt are the controller-manager's work; with it down they appear when it returns.
+    if (obj.kind === "Namespace" && (this.inStep || controlPlaneHealth(this).kcm)) ensureNamespaceDefaults(this, meta.name);
     this.flush();
     return stored as unknown as T;
   }
 
   /** Replaces an existing object's spec/metadata (like PUT). */
   replace<T extends KubeObject>(input: T, opts: RequestOptions = {}): T {
+    this.requireApi();
     const prev = this.get(input.kind, input.metadata.namespace, input.metadata.name);
     const obj = clone(input) as unknown as AnyObject;
     obj.apiVersion ??= prev.apiVersion;
@@ -700,6 +758,7 @@ export class Cluster {
   }
 
   delete(kind: string, namespace: string | undefined, name: string, opts: DeleteOptions = {}): AnyObject {
+    this.requireApi();
     const obj = this.get(kind, namespace, name);
     this.deleteObject(obj, opts);
     this.flush();
@@ -725,6 +784,10 @@ export class Cluster {
     }
     if (obj.kind === "Pod") {
       const pod = obj as Pod;
+      if (isStaticPod(pod)) {
+        recreateMirror(this, pod);
+        return;
+      }
       if (opts.force || opts.gracePeriodSeconds === 0 || !pod.spec?.nodeName) {
         this.remove(pod);
         return;
@@ -750,6 +813,7 @@ export class Cluster {
     if (obj.kind === "Node") {
       for (const p of this.list<Pod>("Pod")) if (p.spec?.nodeName === obj.metadata.name) this.remove(p);
       delete this.state.nodes[obj.metadata.name];
+      // The machine is still there, with its files and services: only the Node object is gone, so a terminal logged in to it keeps working.
     }
     // Foreground: the owner stays (with the foregroundDeletion finalizer) until the garbage
     // collector has deleted every dependent that blocks owner deletion.

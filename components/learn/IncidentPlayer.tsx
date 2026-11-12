@@ -1,8 +1,9 @@
 "use client";
 
 // Incident mode: the shop is serving real traffic when something breaks. A pager shows the live
-// error rate and the clock; it's resolved once the shop has been healthy for RESOLVE_MS. Hints
-// unlock one at a time, and the fix stays hidden until asked for.
+// error rate and the clock; it's resolved once the shop has been healthy for RESOLVE_MS. Nothing
+// that names a command is shown up front: the first Hint reveals where to start, each further
+// Hint the next one, and the fix stays hidden until asked for.
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -18,10 +19,9 @@ import { Inspector } from "../sim/Inspector";
 import { LayoutToggle, MobileTabs, SimControls, Workspace, useLayoutChoice } from "../sim/Workspace";
 import { DIFFICULTY } from "./difficulty";
 import { dailyStreak, saveIncident, type IncidentResult } from "./incidentProgress";
+import { ladder } from "@/lib/lessons/hints";
+import { HintLadder, ScrollOnMount } from "./HintLadder";
 import { Prose } from "./Prose";
-
-/** A first look that fits any outage. */
-const START = ["kubectl get pods -o wide", "kubectl get events --sort-by=.lastTimestamp"];
 
 export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The Daily Incident's number, when this is it. */ day?: number; seed?: number }) {
   const inc = incidentBySlug(slug)!;
@@ -36,10 +36,11 @@ export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The
   const [sawFix, setSawFix] = useState(false);
   const [celebrate, setCelebrate] = useState(0);
   const [sel, setSel] = useState<Selection>(null);
-  const [layout, setLayout] = useLayoutChoice("spotlight");
+  const [layout, setLayout] = useLayoutChoice("split");
   const [mobileTab, setMobileTab] = useState<"incident" | "cluster" | "terminal">("incident");
   const sim = useSimulation({
     seed,
+    ...(inc.nodes ? { nodes: inc.nodes } : {}),
     setup: (c) => void applyYaml({ cluster: c, namespace: "default", files: {} }, shopYaml(), undefined, undefined, "shop.yaml"),
     warmupMs: 60_000,
     files: { "shop.yaml": shopYaml() },
@@ -58,7 +59,6 @@ export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The
   const traffic = c ? shopTraffic(c) : { rps: 0, err: 0 };
   const now = c?.now ?? 0;
   const elapsed = run.at !== null ? now - run.at : 0;
-  const commands = run.at !== null ? Math.max(0, sim.history.length - run.history) : 0;
 
   // Follow the outage on every simulation update: it shows, the shop gets healthy again, and after RESOLVE_MS of that it's resolved.
   useEffect(() => {
@@ -92,6 +92,7 @@ export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The
   const recovering = !result && run.brokeSeen && !problem && run.healthySince !== null ? now - run.healthySince : null;
   const state = result ? "resolved" : recovering !== null ? "recovering" : run.brokeSeen ? "down" : "brewing";
   const next = INCIDENTS[INCIDENTS.findIndex((x) => x.slug === inc.slug) + 1];
+  const rungs = ladder(inc.hints, inc.start);
 
   return (
     <div className="font-sheet flex h-dvh flex-col overflow-hidden bg-paper text-ink">
@@ -117,10 +118,13 @@ export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The
         sim={sim}
         selection={sel}
         onSelect={setSel}
-        inspector={sel && <Inspector sim={sim} c={c} sel={sel} onSelect={setSel} />}
+        inspector={sel && <Inspector sim={sim} c={c} sel={sel} onSelect={setSel} quiet />}
         onCloseInspector={() => setSel(null)}
         tabs={["terminal", "editor", "events", "resources"]}
         layout={layout}
+        quiet
+        // The cluster's one-line status names the cause: it appears with the second hint, or once resolved.
+        narration={hints >= 2 || !!result}
         palette
         mobileView={mobileTab === "cluster" ? "canvas" : mobileTab === "incident" ? "side" : "dock"}
         sideLabel="Incident"
@@ -136,36 +140,32 @@ export function IncidentPlayer({ slug, day, seed = 11 }: { slug: string; /** The
               <div className="mt-3">
                 <Prose text={inc.brief} onRun={runCmd} />
               </div>
-              {!result && commands === 0 && (
-                <div className="mt-4">
-                  <p className="mb-2 text-[14px] text-ink-soft">Where to start: look before you change anything. These only read the cluster.</p>
-                  <Prose text={"```bash\n" + START.join("\n") + "\n```"} onRun={runCmd} />
-                </div>
-              )}
             </div>
             {!result && (
-              <div className="px-5 py-4">
-                {inc.hints.slice(0, hints).map((h, i) => (
-                  <div key={i} className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13.5px] text-amber-950">
-                    <div className="mb-0.5 text-[11.5px] font-medium uppercase tracking-[0.06em] text-amber-800">Hint {i + 1}</div>
-                    <Prose text={h} onRun={runCmd} />
+              <>
+                {hints > 0 && (
+                  <div className="px-5 pt-4">
+                    <HintLadder rungs={rungs} shown={hints} onRun={runCmd} />
                   </div>
-                ))}
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {hints < inc.hints.length && (
-                    <Btn tone="ghost" onClick={() => setHints((n) => n + 1)}>
+                )}
+                {/* A direct child of the panel, so it stays pinned to its foot and Hint is in reach however short the panel is dragged. */}
+                <div className="sticky bottom-0 z-10 flex flex-wrap gap-1.5 border-t border-ink/10 bg-paper px-5 py-3">
+                  {hints < rungs.length && (
+                    <Btn tone="primary" onClick={() => setHints((n) => n + 1)}>
                       {hints ? "Another hint" : "Hint"}
                     </Btn>
                   )}
                   {!sawFix && <Btn onClick={() => setSawFix(true)}>Show the fix</Btn>}
                 </div>
                 {sawFix && (
-                  <div className="mt-3">
-                    <div className="mb-1.5 text-[13px] text-ink-soft">One way to fix it:</div>
-                    <Prose text={inc.fix} onRun={runCmd} onEdit={(y) => sim.openFile("fix.yaml", y)} />
+                  <div className="px-5 pb-4">
+                    <ScrollOnMount>
+                      <div className="mb-1.5 text-[13px] text-ink-soft">One way to fix it:</div>
+                      <Prose text={inc.fix} onRun={runCmd} onEdit={(y) => sim.openFile("fix.yaml", y)} />
+                    </ScrollOnMount>
                   </div>
                 )}
-              </div>
+              </>
             )}
           </>
         }

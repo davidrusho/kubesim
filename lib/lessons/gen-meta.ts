@@ -12,7 +12,7 @@ import { CHALLENGES } from "./challenges";
 import { EXAMS } from "./exams";
 import { LESSONS, type Lesson } from "./lessons";
 
-const lesson = (l: Lesson) => ({
+const lesson = (l: Omit<Lesson, "steps"> & { steps: { title: string }[] }) => ({
   slug: l.slug,
   title: l.title,
   ...(l.short ? { short: l.short } : {}),

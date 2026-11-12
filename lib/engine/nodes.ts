@@ -2,12 +2,12 @@
 
 import type { Cluster } from "./cluster";
 import type { Condition, Node, Pod } from "./types";
+import { buildHost, nodeIp } from "./host";
+import { seedJournal } from "./hostservices";
+
+export { nodeIp };
 
 const KUBE_VERSION = "v1.37.0";
-
-export function nodeIp(index: number): string {
-  return `172.18.0.${index + 2}`;
-}
 
 export function kubeletConditions(now: number, ready: boolean): Condition[] {
   const c = (type: string, status: "True" | "False", reason: string, message: string): Condition => ({
@@ -69,6 +69,9 @@ export function addNode(cluster: Cluster, name: string, role: "control-plane" | 
   });
   // The kubelet posts Ready ~2s after registering.
   cluster.state.nodes[name] = { up: true, lastHeartbeat: cluster.now, images: [], nextPodIp: 2, index, readyAt: cluster.now + 2000 };
+  // The host behind the Node (ADR 0003): its files, services and journal. Manifests exist only where there are system Pods to run.
+  cluster.state.hosts[name] = buildHost(cluster, name, role, index, cluster.state.config.systemPods);
+  seedJournal(cluster, name);
   cluster.record(node, "Normal", "Starting", "", "kubelet", name);
   cluster.record(node, "Normal", "RegisteredNode", `Node ${name} event: Registered Node ${name} in Controller`, "node-controller");
   return node;

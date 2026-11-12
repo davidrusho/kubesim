@@ -2,7 +2,8 @@
 
 // Challenge mode: a broken cluster and a goal, no step-by-step instructions.
 // Goals can be met in any order; their Checks run every frame. Hints and the
-// solution stay hidden until the Learner asks.
+// solution stay hidden until the Learner asks, and nothing that names a command is shown before the
+// first Hint: that reveals where to start, each further Hint the next one for that goal.
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -21,10 +22,10 @@ import { challengeKey, loadPassed, savePassed } from "./progress";
 import { DIFFICULTY } from "./difficulty";
 import { safeCheck } from "./checks";
 import { capture } from "@/lib/posthog-client";
+import { ladder } from "@/lib/lessons/hints";
+import { HintLadder, ScrollOnMount } from "./HintLadder";
+import { loadUsage, saveUsage, usageSummary, type Usage } from "./challengeUsage";
 
-
-/** A first look that fits any broken cluster. */
-const START = ["kubectl get pods -o wide", "kubectl get events --sort-by=.lastTimestamp"];
 
 export function ChallengePlayer({ slug }: { slug: string }) {
   const ch = challengeBySlug(slug)!;
@@ -50,14 +51,21 @@ export function ChallengePlayer({ slug }: { slug: string }) {
         }
       }
       setPassed(ok);
+      setUsage(loadUsage(slug));
     },
   });
   const [sel, setSel] = useState<Selection>(null);
-  const [hints, setHints] = useState<number[]>([]);
+  /** Rungs of each goal's hint ladder revealed so far, and the goals whose fix was shown (both kept across visits). */
+  const [usage, setUsage] = useState<Usage>({ hints: {}, fixes: [] });
+  const hintsShown = usage.hints;
+  const revealed = usage.fixes;
+  const bump = (u: Usage) => {
+    setUsage(u);
+    saveUsage(slug, u);
+  };
   /** Goals met in this visit: each one gets a little burst. */
   const [celebrate, setCelebrate] = useState(0);
-  const [revealed, setRevealed] = useState<number[]>([]);
-  const [layout, setLayout] = useLayoutChoice("spotlight");
+  const [layout, setLayout] = useLayoutChoice("split");
   const [mobileTab, setMobileTab] = useState<"goals" | "cluster" | "terminal">("goals");
   const c = sim.cluster;
   const idx = CHALLENGES.findIndex((x) => x.slug === slug);
@@ -101,8 +109,7 @@ export function ChallengePlayer({ slug }: { slug: string }) {
                 if ((passed.length || sim.history.length) && !window.confirm("Start this challenge over? The cluster is broken again and your progress in it is reset.")) return;
                 sim.reset();
                 setSel(null);
-                setHints([]);
-                setRevealed([]);
+                bump({ hints: {}, fixes: [] });
               }}
             >
               Start over
@@ -114,10 +121,13 @@ export function ChallengePlayer({ slug }: { slug: string }) {
         sim={sim}
         selection={sel}
         onSelect={setSel}
-        inspector={sel && <Inspector sim={sim} c={c} sel={sel} onSelect={setSel} />}
+        inspector={sel && <Inspector sim={sim} c={c} sel={sel} onSelect={setSel} quiet />}
         onCloseInspector={() => setSel(null)}
         tabs={["terminal", "editor", "events", "resources"]}
         layout={layout}
+        quiet
+        // The cluster's one-line status names the cause: it appears once two hints have been asked for, or when solved.
+        narration={Object.values(hintsShown).reduce((a, n) => a + n, 0) >= 2 || done}
         mobileView={mobileTab === "cluster" ? "canvas" : mobileTab === "goals" ? "side" : "dock"}
         sideLabel="Challenge"
         side={
@@ -134,12 +144,6 @@ export function ChallengePlayer({ slug }: { slug: string }) {
               <div className="px-5 py-4">
                 <h2 className="mb-2 text-[15.5px]">The situation</h2>
                 <Prose text={ch.brief} onRun={run} />
-                {!done && passed.length === 0 && (
-                  <div className="mt-5">
-                    <p className="mb-2 text-[14px] text-ink-soft">Where to start: look before you change anything. These only read the cluster.</p>
-                    <Prose text={"```bash\n" + (ch.start ?? START).join("\n") + "\n```"} onRun={run} />
-                  </div>
-                )}
               </div>
               <ol className="border-t border-ink/10" aria-label="Goals">
                 {ch.steps.map((g, i) => {
@@ -158,21 +162,38 @@ export function ChallengePlayer({ slug }: { slug: string }) {
                                 <Prose text={g.body} />
                               </div>
                               <div className="mt-3 flex gap-1.5">
-                                <Btn tone="ghost" onClick={() => { capture("challenge_hint_requested", { challenge_slug: slug, goal_number: i + 1 }); setHints((h) => (h.includes(i) ? h : [...h, i])); }}>
-                                  Hint
-                                </Btn>
-                                <Btn onClick={() => { capture("challenge_solution_revealed", { challenge_slug: slug, goal_number: i + 1 }); setRevealed((r) => (r.includes(i) ? r : [...r, i])); }}>
+                                {(hintsShown[i] ?? 0) < ladder(g.hints, ch.start).length && (
+                                  <Btn
+                                    tone="primary"
+                                    onClick={() => {
+                                      capture("challenge_hint_requested", { challenge_slug: slug, goal_number: i + 1 });
+                                      bump({ ...usage, hints: { ...hintsShown, [i]: (hintsShown[i] ?? 0) + 1 } });
+                                    }}
+                                  >
+                                    {hintsShown[i] ? "Another hint" : "Hint"}
+                                  </Btn>
+                                )}
+                                <Btn
+                                  onClick={() => {
+                                    capture("challenge_solution_revealed", { challenge_slug: slug, goal_number: i + 1 });
+                                    if (!revealed.includes(i)) bump({ ...usage, fixes: [...revealed, i] });
+                                  }}
+                                >
                                   Show the fix
                                 </Btn>
                               </div>
                             </>
                           )}
-                          {hints.includes(i) && !isDone && <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-900">{g.hint}</p>}
+                          {!isDone && (hintsShown[i] ?? 0) > 0 && (
+                            <div className="mt-2">
+                              <HintLadder rungs={ladder(g.hints, ch.start)} shown={hintsShown[i]} onRun={run} />
+                            </div>
+                          )}
                           {revealed.includes(i) && !isDone && (
-                            <div className="mt-3">
+                            <ScrollOnMount>
                               <div className="mb-1.5 text-[13px] text-ink-soft">One way to fix it:</div>
                               <Prose text={[...solutionCommands(g, c).map((cmd) => "```bash\n" + cmd + "\n```"), ...(g.solution.yaml ? ["```yaml\n" + g.solution.yaml + "\n```"] : [])].join("\n\n")} onRun={run} onEdit={(y) => sim.openFile("fix.yaml", y)} />
-                            </div>
+                            </ScrollOnMount>
                           )}
                         </div>
                       </div>
@@ -185,7 +206,7 @@ export function ChallengePlayer({ slug }: { slug: string }) {
                   <Burst shot={celebrate} pieces={30} spread={150} />
                   <div className="font-display text-[20px]">Challenge solved</div>
                   <p className="mt-1 text-[14px] text-ink-soft">
-                    {revealed.length ? "You got there, with a peek at the fix. Try Start over to do it from memory." : "Solved without looking at the fix."} You practised: {ch.concepts.join(", ")}.
+                    Solved {usageSummary(usage)}.{revealed.length ? " Try Start over to do it from memory." : ""} You practised: {ch.concepts.join(", ")}.
                   </p>
                   <div className="mt-4 flex gap-2">
                     <Link href={next ? `/challenges/${next.slug}` : "/challenges"} className="inline-flex h-9 items-center btn-primary rounded-lg px-3.5 text-[14px] text-white font-medium">

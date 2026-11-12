@@ -39,7 +39,7 @@ import type { SimStore } from "@/lib/sim/useSimulation";
 import { age, podCategory, podReady, podStatus, restarts } from "@/lib/sim/status";
 import { manifestFor } from "@/lib/kubectl/kubectl";
 import { tableRows } from "@/lib/kubectl/printers";
-import { Btn, CAT_COLOR, Dot, Heading, clock } from "../ui";
+import { Btn as UiBtn, CAT_COLOR, Dot, Heading, clock } from "../ui";
 import type { Selection, SelKind } from "./ClusterView";
 import type { LogEntry } from "@/lib/sim/useSimulation";
 
@@ -81,6 +81,14 @@ function EventList({ events, now }: { events: KubeEvent[]; now: number }) {
 }
 
 /** What the header needs from the Inspector around it: the selection (for Delete) and what's wrong with it. */
+/** Practice screens (Incidents, Challenges) hide the explanations and diagnoses that say what to run or what is wrong: those come from Hint. */
+const Quiet = createContext(false);
+
+/** The shared button, except that in practice mode a tooltip that names a command is dropped. */
+function Btn(props: React.ComponentProps<typeof UiBtn>) {
+  const quiet = useContext(Quiet);
+  return <UiBtn {...props} title={quiet && props.title && /\b(kubectl|curl)\b/i.test(props.title) ? undefined : props.title} />;
+}
 const Selected = createContext<{ sim: Sim; c: Cluster; sel: NonNullable<Selection>; onSelect: (s: Selection) => void; findings?: Finding[] } | null>(null);
 
 function InspectHeader({ kind, name, color, status, actions }: { kind: string; name: string; color: string; status: string; actions?: React.ReactNode }) {
@@ -202,6 +210,7 @@ function Section({ title, children, right }: { title: string; children: React.Re
 }
 
 function Explain({ children }: { children: React.ReactNode }) {
+  if (useContext(Quiet)) return null;
   return <p className="mb-3 border border-ink/10 bg-ink/[0.03] p-2.5 text-[12px] leading-relaxed text-ink">{children}</p>;
 }
 
@@ -244,7 +253,7 @@ const probeText = (p: Probe) =>
 const ownedPods = (c: Cluster, o: AnyObject) => c.list<Pod>("Pod", o.metadata.namespace).filter((p) => p.metadata.ownerReferences?.some((r) => r.uid === o.metadata.uid));
 const usedBy = (c: Cluster, ns: string | undefined, test: (p: Pod) => boolean) => c.list<Pod>("Pod", ns).filter(test);
 
-export function Inspector({ sim, c, sel, onSelect }: { sim: Sim; c: Cluster; sel: Selection; onSelect: (s: Selection) => void }) {
+export function Inspector({ sim, c, sel, onSelect, quiet = false }: { sim: Sim; c: Cluster; sel: Selection; onSelect: (s: Selection) => void; /** Practice mode: no "What's wrong" panel, no explanations. */ quiet?: boolean }) {
   if (!sel) {
     return (
       <div className="flex flex-col items-center p-10 text-center">
@@ -257,7 +266,7 @@ export function Inspector({ sim, c, sel, onSelect }: { sim: Sim; c: Cluster; sel
   const obj = c.raw(kind, sel.kind === "node" ? undefined : (sel.ns ?? "default"), sel.name);
   if (!obj) return <p className="p-6 text-[13px] text-ink-soft">{sel.name} no longer exists.</p>;
   const props = { sim, c, onSelect };
-  const findings = DIAGNOSED.has(sel.kind) ? diagnose(c, sel.kind, sel.ns, sel.name) : undefined;
+  const findings = !quiet && DIAGNOSED.has(sel.kind) ? diagnose(c, sel.kind, sel.ns, sel.name) : undefined;
   const body = (() => {
     switch (sel.kind) {
       case "pod":
@@ -296,7 +305,9 @@ export function Inspector({ sim, c, sel, onSelect }: { sim: Sim; c: Cluster; sel
   return (
     // Keyed by the selection so per-object state (decoded Secret values, chosen container) never carries over.
     <div key={`${sel.kind}/${sel.ns ?? ""}/${sel.name}`}>
-      <Selected.Provider value={{ sim, c, sel, onSelect, findings }}>{body}</Selected.Provider>
+      <Quiet.Provider value={quiet}>
+        <Selected.Provider value={{ sim, c, sel, onSelect, findings }}>{body}</Selected.Provider>
+      </Quiet.Provider>
       <Section title="Events">
         <EventList events={c.eventsFor(obj)} now={c.now} />
       </Section>
@@ -501,6 +512,7 @@ function ServiceInspector({ sim, c, s }: P & { s: Service }) {
 }
 
 function DeploymentInspector({ sim, c, onSelect, d }: P & { d: Deployment }) {
+  const quiet = useContext(Quiet);
   const ns = d.metadata.namespace;
   const want = d.spec?.replicas ?? 1;
   const st = d.status ?? {};
@@ -519,7 +531,7 @@ function DeploymentInspector({ sim, c, onSelect, d }: P & { d: Deployment }) {
         <KV k="Updated" v={`${st.updatedReplicas ?? 0} of ${want}`} />
         <KV k="Available" v={`${st.availableReplicas ?? 0} of ${want}`} />
         <KV k="Revision" v={d.metadata.annotations?.["deployment.kubernetes.io/revision"] ?? "—"} />
-        {d.spec?.paused && <KV k="Paused" v="yes: template changes wait for kubectl rollout resume" />}
+        {d.spec?.paused && <KV k="Paused" v={quiet ? "yes" : "yes: template changes wait for kubectl rollout resume"} />}
         {hpa && <KV k="Autoscaler" v={<Link onClick={() => onSelect({ kind: "hpa", ns, name: hpa.metadata.name })}>{`${hpa.metadata.name} (${hpa.spec?.minReplicas ?? 1}–${hpa.spec?.maxReplicas})`}</Link>} />}
       </div>
       <Section title="ReplicaSets (revision history)">

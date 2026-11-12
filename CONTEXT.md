@@ -49,11 +49,11 @@ A group of Lessons on one topic (Foundations, Workloads, Configuration, Networki
 _Avoid_: Module, course, chapter
 
 **Challenge**:
-A Simulated Cluster that starts broken or unfinished, plus one or more goals, with no step-by-step instructions. Each goal is a Step whose Check tests the fix; hints and the solution stay hidden until asked for.
+A Simulated Cluster that starts broken or unfinished, plus one or more goals, with no step-by-step instructions. Each goal is a Step whose Check tests the fix. Nothing that names a command is shown until the Learner presses Hint: the first press reveals where to start (read-only commands), each further press the next hint for that goal, and the solution is the last resort. The hints and fixes used are remembered and shown when the goal is solved.
 _Avoid_: Puzzle, quiz, lab
 
 **Incident**:
-The shop (a web tier, an API, Postgres and Redis, with simulated customers sending real traffic) running healthily until something breaks. The Learner is paged with the live error rate and a clock, and the Incident is resolved once the shop has served cleanly, with every workload healthy, for 15 seconds of cluster time.
+The shop (a web tier, an API, Postgres and Redis, with simulated customers sending real traffic) running healthily until something breaks. The Learner is paged with the live error rate and a clock, and the Incident is resolved once the shop has served cleanly, with every workload healthy, for 15 seconds of cluster time. The page and brief name no command; the first press of Hint reveals where to start (read-only commands), each further press the next hint, and the fix is the last rung. How many hints were used, and whether the fix was shown, is kept with the result.
 _Avoid_: Outage game, scenario (Scenarios are the Sandbox's guided demos)
 
 **Daily Incident**:

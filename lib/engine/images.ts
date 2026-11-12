@@ -207,6 +207,24 @@ function roundDigits(all: string, n: number): string {
   return `${s[0]}.${s.slice(1)}`;
 }
 
+/** The ports a kubeadm control-plane binary listens on, from its flags (so a probe on the wrong port fails as it does on a real node). */
+const flagPorts = (args: string[], name: string, fallback: number[]) => {
+  const v = args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+  return v === undefined ? fallback : v.split(",").map((u) => parseInt(/:(\d+)(?:\/|$)/.exec(u)?.[1] ?? u, 10)).filter((n) => !isNaN(n));
+};
+const CONTROL_PLANE_PORTS: Record<string, (args: string[]) => number[]> = {
+  "kube-apiserver": (a) => flagPorts(a, "secure-port", [6443]),
+  "kube-controller-manager": (a) => flagPorts(a, "secure-port", [10257]),
+  "kube-scheduler": (a) => flagPorts(a, "secure-port", [10259]),
+  etcd: (a) => [...flagPorts(a, "listen-client-urls", [2379]), ...flagPorts(a, "listen-peer-urls", [2380]), ...flagPorts(a, "listen-metrics-urls", [])],
+};
+const CONTROL_PLANE_TAGS: Record<string, (tag: string) => boolean> = {
+  "kube-apiserver": (t) => /^v1\.3[67]\.\d$/.test(t),
+  "kube-controller-manager": (t) => /^v1\.3[67]\.\d$/.test(t),
+  "kube-scheduler": (t) => /^v1\.3[67]\.\d$/.test(t),
+  etcd: (t) => /^3\.[56]\.\d+-\d+$/.test(t),
+};
+
 export const IMAGES: ImageInfo[] = [
   {
     repo: "nginx",
@@ -504,11 +522,13 @@ export const IMAGES: ImageInfo[] = [
   ).map(
     ([name, cpu, mem]): ImageInfo => ({
       repo: `registry.k8s.io/${name}`,
-      tags: (t) => /^v?\d/.test(t),
+      // The control-plane images have a short, known tag list (a made-up patch version is ErrImagePull, as on the real registry).
+      tags: CONTROL_PLANE_TAGS[name] ?? ((t) => /^v?\d/.test(t)),
       sizeBytes: 30_000_000,
       shell: false,
       flavor: "none",
       defaultPort: name === "ingress-nginx/controller" ? 80 : name === "coredns/coredns" ? 53 : name === "metrics-server/metrics-server" ? 10250 : undefined,
+      ...(CONTROL_PLANE_PORTS[name] ? { ports: CONTROL_PLANE_PORTS[name] } : {}),
       entrypoint: () => [{ op: "serve" }],
       termExit: 0,
       idleCpu: cpu,

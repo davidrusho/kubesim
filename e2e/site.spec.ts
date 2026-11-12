@@ -60,18 +60,18 @@ test("sandbox: an untouched cluster says it's free play, and goes away once you 
 test("layout: Spotlight and Split switch on every screen and the choice is remembered", async ({ page }) => {
   await page.goto("/learn/first-pod/");
   const layout = page.getByRole("group", { name: "Layout" });
-  // Lessons start in Spotlight: the steps and the terminal float over the canvas.
-  await expect(layout.getByRole("button", { name: "Spotlight" })).toHaveAttribute("aria-pressed", "true");
-  await layout.getByRole("button", { name: "Split" }).click();
+  // Lessons (like Incidents and Challenges) open in Split: the steps and the terminal sit in cards beside the canvas.
   await expect(layout.getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
+  await layout.getByRole("button", { name: "Spotlight" }).click();
+  await expect(layout.getByRole("button", { name: "Spotlight" })).toHaveAttribute("aria-pressed", "true");
   await run(page, "kubectl get nodes");
   await expect(page.getByText("1/5", { exact: true })).toBeVisible();
   // The choice carries over to other screens and survives a reload.
   await page.goto("/sandbox/");
-  await expect(page.getByRole("group", { name: "Layout" }).getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
-  await page.getByRole("group", { name: "Layout" }).getByRole("button", { name: "Spotlight" }).click();
-  await page.reload();
   await expect(page.getByRole("group", { name: "Layout" }).getByRole("button", { name: "Spotlight" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("group", { name: "Layout" }).getByRole("button", { name: "Split" }).click();
+  await page.reload();
+  await expect(page.getByRole("group", { name: "Layout" }).getByRole("button", { name: "Split" })).toHaveAttribute("aria-pressed", "true");
   await run(page, "kubectl get nodes");
   await expect(page.getByRole("log", { name: "Terminal output" })).toContainText("control-plane");
 });

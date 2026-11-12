@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { Cluster, type Pod, type Service } from "@/lib/engine";
+import { Cluster, EXAM_NODES, type Pod, type Service } from "@/lib/engine";
+import { hostWrite } from "@/lib/engine/host";
 import { BLUEPRINTS } from "./blueprints";
 import { canDrop, parseTarget, performDrop } from "./drag";
 import { SimStore } from "./useSimulation";
@@ -111,4 +112,31 @@ test("the control plane's Node can't be trashed from the canvas", () => {
   const r = performDrop(s, { kind: "object", type: "node", ns: "default", name: "control-plane", label: "Node control-plane" }, { type: "trash" });
   expect(r.ok).toBe(false);
   expect(s.cluster!.raw("Node", undefined, "control-plane")).toBeDefined();
+});
+
+test("with the apiserver down a drop that would write through the API is refused with kubectl's message and changes nothing; chaos on a Node is power, not an API call", () => {
+  const s = new SimStore();
+  s.cluster = new Cluster({ seed: 4, systemPods: true, nodes: EXAM_NODES });
+  const c = s.cluster;
+  c.advance(20_000);
+  const h = c.state.hosts.controlplane;
+  const path = "/etc/kubernetes/manifests/kube-apiserver.yaml";
+  hostWrite(h, path, h.files[path].content.replace("--secure-port=6443", "--secure-port=6444"), c.now);
+  c.advance(30_000);
+  const refused = "The connection to the server controlplane:6443 was refused - did you specify the right host or port?";
+  const before = c.list("Deployment").length;
+  expect(performDrop(s, { kind: "palette", what: "deployment", image: "nginx:1.27", label: "" }, { type: "canvas" })).toEqual({ ok: false, note: refused });
+  expect(performDrop(s, { kind: "palette", what: "pod", image: "nginx:1.27", label: "" }, { type: "canvas" })).toEqual({ ok: false, note: refused });
+  expect(performDrop(s, { kind: "tool", what: "cordon", label: "" }, { type: "node", name: "node01" })).toEqual({ ok: false, note: refused });
+  expect(performDrop(s, { kind: "object", type: "pod", ns: "kube-system", name: "etcd-controlplane", label: "" }, { type: "trash" })).toEqual({ ok: false, note: refused });
+  expect(c.list("Deployment").length).toBe(before);
+  expect(c.raw("Pod", "default", "nginx")).toBeUndefined();
+  expect((c.raw("Node", undefined, "node01") as { spec?: { unschedulable?: boolean } }).spec?.unschedulable).toBeFalsy();
+  expect(c.raw("Pod", "kube-system", "etcd-controlplane")).toBeDefined();
+  // The Editor's Apply button goes through the same refusal.
+  expect(s.apply("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm1\n", "cm1.yaml")).toEqual({ out: refused, ok: false });
+  expect(c.raw("ConfigMap", "default", "cm1")).toBeUndefined();
+  // Power is not the API.
+  expect(performDrop(s, { kind: "tool", what: "chaos", label: "" }, { type: "node", name: "node01" }).note).toContain("simulated power loss");
+  expect(c.state.nodes.node01.up).toBe(false);
 });

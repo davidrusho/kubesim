@@ -18,6 +18,7 @@ export { dsTargetNode } from "./controllers/daemonset";
 export { jobFinished, jobComplete, jobFailed } from "./controllers/job";
 export { resolveEnv, runProbe } from "./controllers/kubelet";
 export { SYSTEM_NAMESPACES } from "./bootstrap";
+export { apiServerRefusal, componentUp, controlPlaneHealth, controlPlaneModelled, type ControlPlaneHealth } from "./controllers/staticpods";
 export { checkEscalation } from "./rbac";
 export { LAST_APPLIED, threeWayMerge } from "./apply";
 export { podStatusColumns } from "./podstatus";

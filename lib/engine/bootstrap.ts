@@ -9,21 +9,11 @@
 import type { Cluster } from "./cluster";
 import { addNode } from "./nodes";
 import { parseImage } from "./images";
+import { SYSTEM_IMAGES } from "./host";
+import { bootstrapStaticPods } from "./controllers/staticpods";
 import { BUILTIN_CLUSTER_ROLES, BUILTIN_CLUSTER_ROLE_BINDINGS, runClusterRoleAggregation } from "./rbac";
 import { SYSTEM_PRIORITY_CLASSES } from "./policy";
 import type { DaemonSet, Deployment, Endpoints, EndpointSlice, Pod, Service } from "./types";
-
-const SYSTEM_IMAGES = {
-  etcd: "registry.k8s.io/etcd:3.6.4-0",
-  "kube-apiserver": "registry.k8s.io/kube-apiserver:v1.37.0",
-  "kube-controller-manager": "registry.k8s.io/kube-controller-manager:v1.37.0",
-  "kube-scheduler": "registry.k8s.io/kube-scheduler:v1.37.0",
-  "kube-proxy": "registry.k8s.io/kube-proxy:v1.37.0",
-  coredns: "registry.k8s.io/coredns/coredns:v1.12.1",
-  "metrics-server": "registry.k8s.io/metrics-server/metrics-server:v0.8.0",
-  "ingress-nginx": "registry.k8s.io/ingress-nginx/controller:v1.13.2",
-  "local-path": "docker.io/kindest/local-path-provisioner:v20250516-5dbe5e3f",
-};
 
 export const SYSTEM_NAMESPACES = new Set(["kube-system", "kube-public", "kube-node-lease", "local-path-storage", "ingress-nginx"]);
 
@@ -121,27 +111,8 @@ export function bootstrap(cluster: Cluster): void {
   });
 
   if (cp) {
-    for (const comp of ["etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"] as const) {
-      cluster.create<Pod>({
-        apiVersion: "v1",
-        kind: "Pod",
-        metadata: {
-          name: `${comp}-${cp}`,
-          namespace: "kube-system",
-          labels: { component: comp, tier: "control-plane" },
-          annotations: { "kubernetes.io/config.source": "file" },
-          ownerReferences: [{ apiVersion: "v1", kind: "Node", name: cp, uid: cluster.raw("Node", undefined, cp)!.metadata.uid, controller: true }],
-        },
-        spec: {
-          nodeName: cp,
-          hostNetwork: true,
-          priorityClassName: "system-node-critical",
-          automountServiceAccountToken: false,
-          tolerations: [{ operator: "Exists", effect: "NoExecute" }],
-          containers: [{ name: comp, image: SYSTEM_IMAGES[comp] }],
-        },
-      });
-    }
+    // The control plane runs from the manifests on the host: the kubelet's static-Pod source turns each into a mirror Pod (ADR 0003).
+    bootstrapStaticPods(cluster);
     // kind's ingress guide labels the control-plane Node for the ingress controller.
     const node = cluster.raw("Node", undefined, cp)!;
     cluster.put({ ...node, metadata: { ...node.metadata, labels: { ...(node.metadata.labels ?? {}), "ingress-ready": "true" } } });

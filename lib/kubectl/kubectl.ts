@@ -7,6 +7,7 @@
 import {
   ApiError,
   Cluster,
+  apiServerRefusal,
   KIND_LIST,
   authorize,
   forbiddenMessage,
@@ -43,10 +44,11 @@ import { describeObject } from "./describe";
 import { evalPath, formatValue, JsonPathError } from "./jsonpath";
 import * as G from "./generators";
 import { FlagError, GLOBAL_FLAGS, SIMULATED_VERBS, UNSIMULATED_SUBS, UNSIMULATED_VERBS, helpFor, optionsHelp, parseArgs, resolveSub, specFor, splitLeadingGlobals, type Args, type FlagValue } from "./args";
-import { err, out, runLine, type Chunk, type Res } from "./shell";
+import { err, newShell, out, runScript, type Chunk, type Res, type ShellState } from "./shell";
 import { ManifestError, decodeError, kindForObject, mappingError, missingTypeError, parseManifest } from "./manifests";
 import { PATCH_TYPES, PatchError, applyPatch, parsePatch } from "./patch";
 import { complete as completeLine } from "./complete";
+import { currentSession, hostCommand, hostEnv, kubectlOnNode } from "./hostshell";
 
 export interface KubectlContext {
   cluster: Cluster;
@@ -55,6 +57,8 @@ export interface KubectlContext {
   files?: Record<string, string>;
   /** Re-running a streaming command the terminal is still showing, not a fresh one. */
   live?: boolean;
+  /** This terminal session's aliases and variables. */
+  shell?: ShellState;
 }
 
 export interface CommandResult {
@@ -62,8 +66,10 @@ export interface CommandResult {
   ok: boolean;
   /** A streaming command (get -w, logs -f, rollout status, wait): re-run it live. */
   watch?: string;
-  /** Ask the UI to open this file in the Editor (kubectl edit). */
+  /** Ask the UI to open this file in the Editor (kubectl edit, nano, vi). */
   openFile?: string;
+  /** Set when nano / vi / vim opened it: the Editor then behaves like that tool. */
+  editor?: "nano" | "vi";
 }
 
 // ---------------------------------------------------------------- errors and flags
@@ -1932,9 +1938,11 @@ Access:         create role|rolebinding, auth can-i VERB RESOURCE --as=USER, aut
 Cluster:        cordon, uncordon, drain --ignore-daemonsets, taint nodes, label nodes
 Namespaces:     create namespace NAME, -n NAME, config set-context --current --namespace=NAME
 Output:         -o wide|yaml|json|name|jsonpath=…|custom-columns=…, --sort-by, --field-selector, -L
-Shell:          curl, wget, echo, cat, ls, rm; pipes into grep, head, tail, wc, sort, uniq, awk, cut,
-                tr, base64, xargs, tee; > FILE, >> FILE, 2>&1, 2>/dev/null, &&, ||, ;
-                Every command takes --help.
+Shell:          curl, wget, echo, cat, ls, pwd, rm; pipes into grep, head, tail, wc, sort, uniq, awk, cut,
+                tr, base64, xargs, tee; > FILE, >> FILE, << EOF (here-documents), 2>&1, &&, ||, ;
+                alias, unalias, export, unset, env, printenv, source FILE (or . FILE), $VAR and \${VAR}
+                nano, vi, vim FILE edit FILE in the YAML editor tab, with nano or vim keys
+                Aliases and variables last for this terminal session only. Every command takes --help.
 
 Examples:
   kubectl create deployment web --image=nginx --replicas=3
@@ -1960,6 +1968,11 @@ function resolvePath(verb: string, words: string[]): { path: string; words: stri
     rest = rest.filter((_, i) => i !== probe.posIdx[0]);
     path = `${path} ${sub}`;
   }
+}
+
+/** What kubectl does without the apiserver: `config` edits the kubeconfig, `options` and help are text, and `version --client` is the client's own. */
+function runsOffline(path: string, a: Args): boolean {
+  return path === "config" || path.startsWith("config ") || path === "options" || (path === "version" && bflag(a, "--client"));
 }
 
 function runKubectlWords(ctx: KubectlContext, words: string[], stdin: string | undefined, text: string): Res {
@@ -2009,6 +2022,9 @@ function runKubectlWords(ctx: KubectlContext, words: string[], stdin: string | u
     return err(helpFor(path));
   }
   if (path === "cluster-info" && resolved.unknownSub) return err(`error: unknown command "${a.pos.join(" ")}"\nSee 'kubectl cluster-info -h' for help and examples`);
+  // The apiserver does not answer: whatever would reach it is refused, as on the node (ADR 0003, decision 5).
+  const refusal = apiServerRefusal(c);
+  if (refusal && !runsOffline(path, a)) return err(refusal);
   const warnings: string[] = [...a.deprecations];
   const asUser = sflag(a, "--as");
   const s: Session = { ctx, a, path, user: asUser ? userFor(asUser, aflag(a, "--as-group")) : undefined, line: text, stdin, warnings, dry: "none" };
@@ -2062,7 +2078,8 @@ function dispatch(s: Session, verb: string): Res | string {
       const o = ctx.cluster.get(t.k.kind, t.k.namespaced ? ns : undefined, t.names[0]);
       const name = `${t.k.singular}-${t.names[0]}.yaml`;
       (ctx.files ??= {})[name] = manifestFor(o);
-      return { chunks: [{ fd: 1, text: `Opened ${name} in the YAML editor. Change it, then press Apply.` }], ok: true, openFile: name };
+      const editor = ctx.shell?.vars.get("KUBE_EDITOR")?.value ?? ctx.shell?.vars.get("EDITOR")?.value;
+      return { chunks: [{ fd: 1, text: editor ? `Opened ${name} in the YAML editor tab, not in ${editor} (the simulator has no real editor). Change it, then press Apply.` : `Opened ${name} in the YAML editor. Change it, then press Apply.` }], ok: true, openFile: name };
     }
     case "explain":
       if (!a.pos[0]) throw new CmdError("error: You must specify the type of resource to explain, e.g. kubectl explain pod.spec");
@@ -2125,10 +2142,13 @@ function dispatch(s: Session, verb: string): Res | string {
 /** Everything the terminal runs that isn't a shell builtin: kubectl (and k), curl, wget, help, sleep, watch. */
 function execFor(ctx: KubectlContext) {
   return (words: string[], stdin: string | undefined, text: string): Res | undefined => {
+    // ssh, and on a node host systemctl, journalctl, crictl and hostname (ADR 0003).
+    const onHost = hostCommand(ctx, words);
+    if (onHost) return onHost;
     switch (words[0]) {
       case "kubectl":
       case "k":
-        return runKubectlWords(ctx, words.slice(1), stdin, text.replace(/^k(?=\s|$)/, "kubectl"));
+        return kubectlOnNode(ctx, words.slice(1)) ?? runKubectlWords(ctx, words.slice(1), stdin, text.replace(/^k(?=\s|$)/, "kubectl"));
       case "help":
         return out(HELP);
       case "curl":
@@ -2156,9 +2176,13 @@ function execFor(ctx: KubectlContext) {
 
 export function runKubectl(ctx: KubectlContext, line: string): CommandResult {
   const files = (ctx.files ??= {});
+  ctx.shell ??= newShell();
   let r: Res;
   try {
-    r = runLine({ files, exec: execFor(ctx) }, line.trim());
+    // On a node host the file commands reach the Node's files as well (absolute paths outside the home directory).
+    const sess = currentSession(ctx.shell);
+    const view = sess ? hostEnv(ctx.cluster, sess, files) : undefined;
+    r = runScript({ files: view?.files ?? files, host: view?.host, exec: execFor(ctx), shell: ctx.shell }, line.trim());
   } catch (e) {
     console.error("kubesim: the terminal crashed on", JSON.stringify(line), e);
     r = err("error: the simulator hit an internal problem running this command (it's a bug in kubesim, not in your command)");
@@ -2167,11 +2191,13 @@ export function runKubectl(ctx: KubectlContext, line: string): CommandResult {
     .map((ch) => ch.text)
     .filter((t) => t !== "")
     .join("\n");
-  return { out: text, ok: r.ok, ...(r.watch ? { watch: r.watch } : {}), ...(r.openFile ? { openFile: r.openFile } : {}) };
+  return { out: text, ok: r.ok, ...(r.watch ? { watch: r.watch } : {}), ...(r.openFile ? { openFile: r.openFile } : {}), ...(r.editor ? { editor: r.editor } : {}) };
 }
 
 /** Applies a YAML document stream (the Editor's Apply button). */
 export function applyYaml(ctx: KubectlContext, text: string, user?: UserInfo, dryRun?: string, source = "manifest.yaml"): CommandResult {
+  const refusal = apiServerRefusal(ctx.cluster);
+  if (refusal) return { out: refusal, ok: false };
   const a: Args = { pos: [], flags: {}, rest: [], dashAt: -1, posIdx: [], deprecations: [] };
   const s: Session = { ctx, a, path: "apply", user, line: "kubectl apply", warnings: [], dry: dryRun === "client" || dryRun === "server" ? dryRun : dryRun && dryRun !== "none" && dryRun !== "false" ? "client" : "none" };
   ctx.cluster.drainWarnings();

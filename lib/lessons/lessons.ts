@@ -1587,7 +1587,7 @@ spec:
 
 export { TRACKS, trackOf, type TrackId };
 
-export function solutionCommands(step: Step, c: Cluster): string[] {
+export function solutionCommands(step: Pick<Step, "solution">, c: Cluster): string[] {
   const s = step.solution.commands;
   return typeof s === "function" ? s(c) : (s ?? []);
 }

@@ -47,7 +47,8 @@ function allocLbIp(cluster: Cluster): string | undefined {
   return undefined;
 }
 
-export function runNetworkControllers(cluster: Cluster): void {
+/** `kcmUp` is false while kube-controller-manager is down: the default ServiceAccount and kube-root-ca.crt are its work, the LoadBalancer and Ingress addresses are not. */
+export function runNetworkControllers(cluster: Cluster, kcmUp = true): void {
   const now = cluster.now;
   const timers = cluster.state.timers;
 
@@ -84,6 +85,6 @@ export function runNetworkControllers(cluster: Cluster): void {
       delete timers[key];
       cluster.update(ing, (x) => void (x.status = { loadBalancer: { ingress: [{ hostname: "localhost" }] } }));
     }
-    for (const ns of cluster.list<Namespace>("Namespace")) ensureNamespaceDefaults(cluster, ns.metadata.name);
+    if (kcmUp) for (const ns of cluster.list<Namespace>("Namespace")) ensureNamespaceDefaults(cluster, ns.metadata.name);
   }
 }

@@ -12,6 +12,8 @@ import { containerLimits, qosClass, milliCpu, bytes } from "../quantity";
 import type { Condition, ConfigMap, Container, ContainerState, ContainerStatus, Node, PersistentVolumeClaim, Pod, PodPhase, PodStatus, Probe, Secret, Service } from "../types";
 import { deepEqual, goDuration, unixDate } from "../util";
 import { kubeletConditions } from "../nodes";
+import { kubeletPosting } from "../hostservices";
+import { staticPodFault } from "./staticpods";
 import { containerMemory } from "./metrics";
 
 export { goDuration, unixDate } from "../util";
@@ -36,7 +38,8 @@ export function runKubelets(cluster: Cluster): void {
   const now = cluster.now;
   for (const node of cluster.list<Node>("Node")) {
     const rt = cluster.state.nodes[node.metadata.name];
-    if (!rt || !rt.up) continue;
+    // A Node with power but no running kubelet posts nothing; its containers carry on (ADR 0003, decision 2).
+    if (!rt || !kubeletPosting(cluster, node.metadata.name)) continue;
     rt.lastHeartbeat = now;
     // Node status heartbeat.
     const ready = now >= rt.readyAt;
@@ -60,7 +63,7 @@ export function runKubelets(cluster: Cluster): void {
     const nodeName = pod.spec?.nodeName;
     if (!nodeName) continue;
     const nrt = cluster.state.nodes[nodeName];
-    if (!nrt || !nrt.up) continue;
+    if (!nrt || !kubeletPosting(cluster, nodeName)) continue;
     syncPod(cluster, pod, nodeName);
   }
 }
@@ -182,7 +185,7 @@ function syncPod(cluster: Cluster, pod: Pod, nodeName: string): void {
   }
   if (!pod.status?.podIP) {
     const hostIp = `172.18.0.${nrt.index + 2}`;
-    const hostNet = pod.spec?.hostNetwork || pod.metadata.annotations?.["kubernetes.io/config.source"] === "file";
+    const hostNet = pod.spec?.hostNetwork;
     const ip = hostNet ? hostIp : allocPodIp(cluster, nodeName);
     if (!ip) {
       // No free address in the Node's Pod CIDR: the sandbox can't be set up yet.
@@ -556,7 +559,9 @@ function stepContainer(cluster: Cluster, pod: Pod, c: Container, crt: ContainerR
       crt.env = envr.env;
       const hostname = pod.spec?.hostname ?? pod.metadata.name;
       // The kubelet expands $(VAR) in command and args from the container's env ($$ escapes).
-      const res = containerProgram(expandCommand(c, envr.env), info!, envr.env, hostname);
+      // A control-plane manifest with a wrong flag makes the process exit (or give up after a while) instead of serving.
+      const fault = staticPodFault(cluster, pod, c, nodeName);
+      const res = fault ? { ok: true as const, program: fault } : containerProgram(expandCommand(c, envr.env), info!, envr.env, hostname);
       if (!res.ok) {
         ev("Normal", "Created", "Container created");
         ev("Warning", "Failed", `Error: ${res.message}`);
@@ -1042,7 +1047,7 @@ function writeStatus(cluster: Cluster, pod: Pod, prt: PodRuntime, nodeName: stri
 
 const idCache = new Map<string, string>();
 
-function cluster_hash(s: string): string {
+export function cluster_hash(s: string): string {
   const hit = idCache.get(s);
   if (hit) return hit;
   const h = computeId(s);

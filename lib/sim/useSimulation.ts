@@ -6,9 +6,12 @@
 // (cluster state, the clock's second, packets in flight, terminal output).
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Cluster, request, type ClusterState, type KubeEvent } from "@/lib/engine";
+import { Cluster, request, type ClusterState, type KubeEvent, type NodeConfig } from "@/lib/engine";
+import { hostWrite, isHostPath, normPath } from "@/lib/engine/host";
 import type { ActionResult } from "./actions";
 import { applyYaml, runKubectl } from "@/lib/kubectl/kubectl";
+import { newShell, type ShellState } from "@/lib/kubectl/shell";
+import { currentSession, promptFor } from "@/lib/kubectl/hostshell";
 
 export const DEFAULT_MANIFEST = `apiVersion: apps/v1
 kind: Deployment
@@ -59,9 +62,21 @@ export interface TermEntry {
   untilDone?: boolean;
   /** kubectl's namespace when the command ran (shown in the prompt). */
   ns?: string;
+  /** The prompt of a node host the command ran on (`candidate@controlplane:~$`); absent on the base terminal. */
+  prompt?: string;
 }
 
 export const PACKET_MS = 900;
+
+/** How the Editor was opened: as nano, as vi (vi and vim both), or plain (no tool: edits write straight through). */
+export type EditorMode = "nano" | "vi" | null;
+
+/** Lines in a file the way nano ("Wrote N lines") and vim ("NL") count them: a final newline ends a line rather than starting one. */
+export function lineCount(text: string) {
+  if (text === "") return 0;
+  const n = text.split("\n").length;
+  return text.endsWith("\n") ? n - 1 : n;
+}
 
 /** Scrollback and history limits: a long session must not get slower and slower. */
 const LOG_MAX = 100;
@@ -133,10 +148,21 @@ export class SimStore {
   term: TermEntry[] = [];
   /** The Learner's virtual files; the Editor edits `editorFile`. */
   files: Record<string, string> = {};
+  /** This terminal session's aliases and variables: empty on page load and after Start over, like the files. */
+  shell: ShellState = newShell();
   editorFile = "manifest.yaml";
+  /** How `editorFile` was opened: "nano" or "vi" (vi and vim) from the terminal, null for the Editor tab, the file picker, kubectl edit and "Open in editor". */
+  editorMode: EditorMode = null;
+  /** nano / vi: the text being edited. `files[editorFile]` changes only when it is saved. Unused in plain mode, where every keystroke writes through. */
+  buffer = "";
+  /** Set when `editorFile` is a file on this Node's host (opened from an `ssh` session) rather than one of the Learner's own. */
+  editorNode?: string;
   /** Bumped to ask the UI to show the Editor / Terminal tab. */
   editSeq = 0;
   termSeq = 0;
+  /** Bumped when an editor exit asks for the terminal input to take focus; the Terminal collects it with `takeFocusRequest`. */
+  focusSeq = 0;
+  private focusDone = 0;
   /** Which namespace the canvas and stats show ("*" = all). */
   viewNs = "*";
   private lastLive = 0;
@@ -234,10 +260,12 @@ export class SimStore {
   }
 
   private boot() {
+    this.shell = newShell();
     const saved = this.restored();
     if (saved) {
       this.files = { "manifest.yaml": this.opts.editor ?? DEFAULT_MANIFEST, ...(this.opts.files ?? {}) };
       this.editorFile = "manifest.yaml";
+      this.editorMode = null;
       this.attach(saved);
       this.savedRv = saveRev(saved.state);
       this.bootAt = saved.now;
@@ -245,10 +273,11 @@ export class SimStore {
       if (this.opts.speed) this.speed = this.opts.speed;
       return;
     }
-    const c = new Cluster({ seed: this.opts.seed ?? 42, systemPods: this.opts.systemPods ?? true });
+    const c = new Cluster({ seed: this.opts.seed ?? 42, systemPods: this.opts.systemPods ?? true, ...(this.opts.nodes ? { nodes: this.opts.nodes } : {}) });
     this.opts.setup?.(c);
     this.files = { "manifest.yaml": this.opts.editor ?? DEFAULT_MANIFEST, ...(this.opts.files ?? {}) };
     this.editorFile = "manifest.yaml";
+    this.editorMode = null;
     c.advance(this.opts.warmupMs ?? 0);
     this.attach(c);
     this.bootAt = c.now;
@@ -397,7 +426,13 @@ export class SimStore {
   }
 
   private ctx() {
-    return { cluster: this.cluster!, namespace: this.namespace, files: this.files };
+    return { cluster: this.cluster!, namespace: this.namespace, files: this.files, shell: this.shell };
+  }
+
+  /** The prompt of the node host the terminal is logged in to, or undefined on the base terminal. */
+  get prompt(): string | undefined {
+    const s = currentSession(this.shell);
+    return s ? promptFor(s) : undefined;
   }
 
   /** Re-runs streaming commands; true when any output changed. */
@@ -444,29 +479,104 @@ export class SimStore {
     }
     this.stopWatch();
     const ns = this.namespace;
+    const prompt = this.prompt;
     const ctx = this.ctx();
-    const r = runKubectl(ctx, trimmed);
+    let r = runKubectl(ctx, trimmed);
+    // A real terminal cannot start a second editor while one is open. Here the Terminal tab is still reachable, so the open one keeps its unsaved text.
+    if (r.editor && this.editorMode !== null && this.editorDirty) {
+      r = { out: `${r.editor === "nano" ? "nano" : "vi"}: ${this.editorFile} has unsaved changes in the editor. Save or leave it before opening another file.`, ok: false };
+    }
     if (trimmed) this.pushHistory(trimmed);
-    this.term.push({ id: this.id++, cmd: trimmed, out: r.out, ok: r.ok, ns, live: r.watch, untilDone: !/(^watch\s|\s(-w|--watch|-f|--follow)(\s|=|$))/.test(trimmed) });
+    this.term.push({ id: this.id++, cmd: trimmed, out: r.out, ok: r.ok, ns, ...(prompt ? { prompt } : {}), live: r.watch, untilDone: !/(^watch\s|\s(-w|--watch|-f|--follow)(\s|=|$))/.test(trimmed) });
     if (this.term.length > TERM_MAX) this.term.splice(0, this.term.length - TERM_MAX);
     if (ctx.namespace !== this.namespace) {
       this.namespace = ctx.namespace;
       this.viewNs = ctx.namespace;
     }
     if (trimmed) this.pushLog({ id: this.id++, at: c.now, cmd: trimmed, out: r.out, ok: r.ok });
-    if (r.openFile) this.openFile(r.openFile);
+    if (r.openFile) {
+      const sess = currentSession(this.shell);
+      if (sess && isHostPath(r.openFile) && r.editor) this.openHostFile(sess.node, r.openFile, r.editor);
+      else this.openFile(r.openFile, undefined, r.editor ?? null);
+    }
     this.termSeq++;
     this.bump();
     return r;
   };
 
-  /** Opens a file in the Editor, optionally replacing its contents. */
-  openFile = (name: string, content?: string) => {
+  /** Opens a file in the Editor, optionally replacing its contents. `mode` is how nano / vi / vim opened it; without one the Editor writes every keystroke through to the file. */
+  openFile = (name: string, content?: string, mode: EditorMode = null) => {
+    this.editorNode = undefined;
     if (content !== undefined) this.files[name] = content;
-    this.files[name] ??= "";
+    // nano and vi do not create a new file until it is first saved.
+    if (mode === null) this.files[name] ??= "";
     this.editorFile = name;
+    this.editorMode = mode;
+    this.buffer = this.files[name] ?? "";
     this.editSeq++;
     this.bump();
+  };
+
+  /** nano / vi on a file of a Node's host: the buffer starts as the file's text (empty for a new file), and saving writes the host's file. */
+  private openHostFile(node: string, path: string, mode: EditorMode) {
+    this.editorNode = node;
+    this.editorFile = normPath(path);
+    this.editorMode = mode;
+    this.buffer = this.savedText();
+    this.editSeq++;
+    this.bump();
+  }
+
+  /** The saved text of the file being edited: the Learner's own, or the Node's. */
+  private savedText(): string {
+    if (this.editorNode) return this.cluster?.state.hosts[this.editorNode]?.files[this.editorFile]?.content ?? "";
+    return this.files[this.editorFile] ?? "";
+  }
+
+  /** True once per `exitEditor`: the Terminal calls it when it mounts or re-renders and focuses its input if it is. */
+  takeFocusRequest = () => {
+    if (this.focusSeq === this.focusDone) return false;
+    this.focusDone = this.focusSeq;
+    return true;
+  };
+
+  /** nano / vi: whether the buffer differs from the saved file. */
+  get editorDirty() {
+    return this.editorMode !== null && this.buffer !== this.savedText();
+  }
+
+  /** nano / vi: records the text being edited without touching the file. */
+  setBuffer = (text: string) => {
+    this.buffer = text;
+  };
+
+  /** nano / vi: writes the buffer to the file (`as` names another file, like nano's "File Name to Write" or `:w other`, and becomes the file being edited) and returns what was written. */
+  saveBuffer = (as?: string) => {
+    const typed = as?.trim() || this.editorFile;
+    const name = isHostPath(typed) ? normPath(typed) : typed;
+    const host = this.editorNode ? this.cluster?.state.hosts[this.editorNode] : undefined;
+    if (host && isHostPath(name)) {
+      hostWrite(host, name, this.buffer, this.cluster!.now);
+      this.cluster!.hostChanged();
+    } else {
+      // A name outside the host (a bare file name) is one of the Learner's own files.
+      if (this.editorNode && !isHostPath(name)) this.editorNode = undefined;
+      this.files[name] = this.buffer;
+    }
+    // Like nano and vim, writing under another name makes that the file being edited.
+    this.editorFile = name;
+    this.bump();
+    return { name, lines: lineCount(this.buffer), bytes: new TextEncoder().encode(this.buffer).length };
+  };
+
+  /** nano / vi: leaves the editor (saving first if asked), shows the Terminal and asks for focus in its input. */
+  exitEditor = (save = false, as?: string) => {
+    if (this.editorMode === null) return;
+    if (save) this.saveBuffer(as);
+    this.editorMode = null;
+    this.buffer = this.savedText();
+    this.focusSeq++;
+    this.showTerminal();
   };
 
   /** Asks the UI to show the Terminal tab. */
@@ -475,12 +585,12 @@ export class SimStore {
     this.bump();
   };
 
-  /** Applies YAML (the Editor's Apply button). */
-  apply = (yaml: string, file?: string) => {
+  /** Applies YAML (the Editor's Apply button). With `save: false` (nano / vi, applying the buffer) the file itself is left as last saved. */
+  apply = (yaml: string, file?: string, save = true) => {
     const c = this.cluster;
     if (!c) return;
     const name = file ?? this.editorFile;
-    this.files[name] = yaml;
+    if (save) this.files[name] = yaml;
     const r = applyYaml(this.ctx(), yaml);
     const cmd = `kubectl apply -f ${name}`;
     this.pushHistory(cmd);
@@ -512,7 +622,7 @@ export class SimStore {
   load = (state: ClusterState) => {
     let next: Cluster;
     try {
-      next = trial(state, 5000);
+      next = trial(state, 8000);
     } catch {
       throw new Error("the cluster in it doesn't run in this version of kubesim.");
     }
@@ -608,6 +718,8 @@ export interface SimOptions {
   speed?: number;
   /** Called after each fresh boot (first start and every reset; not when restoring an autosave). */
   onStart?: (s: SimStore) => void;
+  /** The cluster's Nodes, when it should not have the default ones (`EXAM_NODES` for the CKA host-based Incidents). */
+  nodes?: NodeConfig[];
   /** Autosave the cluster to localStorage under this key and restore it on load. */
   persistKey?: string;
   /** Called when the Learner resets, before the new boot. */

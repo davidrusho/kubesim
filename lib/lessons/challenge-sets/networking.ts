@@ -272,8 +272,8 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
     difficulty: "easy",
     track: "operations",
     title: "Waiting for the fast disk",
-    summary: "A Deployment pinned to a Node that doesn't seem to exist.",
-    brief: "`search` has to run on the Node with the SSD, which is labelled for it. Both `search` Pods have been Pending since it was deployed this morning. Leave the Node labels alone: other teams schedule by them.",
+    summary: "Two Pods that have been Pending since this morning's deploy.",
+    brief: "`search` has to run on the Node with the SSD. Both `search` Pods have been Pending since it was deployed this morning. Other teams rely on the Nodes exactly as they are: leave them alone.",
     minutes: 4,
     concepts: ["nodeSelector", "Node labels", "FailedScheduling"],
     setup: (c) => {
@@ -294,19 +294,24 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const pods = readyPods(x.cluster, "search");
           return rolledOut(x.cluster, "search") && pods.length === 2 && pods.every((p) => p.spec?.nodeName === "worker-2");
         },
-        hint: "kubectl describe pod on a Pending Pod says the Nodes didn't match its selector. Compare the Deployment's nodeSelector with kubectl get nodes --show-labels, letter by letter.",
+        hints: [
+          "Both Pods are Pending, so the scheduler found no Node it was willing to use. The Pods may be asking for something specific. Look at what they require of a Node.",
+          "`kubectl describe pods -l app=search` shows the scheduler's message. `kubectl get deployment search -o yaml` shows what the Pods ask for, and `kubectl get nodes --show-labels` shows what the Nodes offer.",
+          "The message says `2 node(s) didn't match Pod's node affinity/selector`. The Pods select `disktype: sdd`, and `worker-2` carries `disktype=ssd`. Two letters are swapped.",
+          "The Node labels are right and other teams rely on them. Correct the `nodeSelector` in the Deployment's Pod template.",
+        ],
         solution: { commands: [`kubectl patch deployment search -p '{"spec":{"template":{"spec":{"nodeSelector":{"disktype":"ssd"}}}}}'`] },
       },
     ],
   },
   {
     slug: "ingress-ignored",
-    start: ["kubectl get ingress", "kubectl get ingressclass"],
+    start: ["kubectl get ingress", "kubectl get ingressclass", "curl http://shop.example/"],
     difficulty: "easy",
     track: "networking",
     title: "404 at the front door",
-    summary: "An Ingress that the cluster's controller never picks up.",
-    brief: "The `shop` Deployment, Service and Ingress were copied over from the old cluster yesterday. The Pods are Ready and the Service has endpoints, but from outside:\n\n```bash\ncurl http://shop.example/\n```\n\nreturns ingress-nginx's `404 Not Found` page. Customers must reach `shop` at `http://shop.example/`.",
+    summary: "Healthy Pods, but the public URL returns 404.",
+    brief: "The `shop` Deployment, Service and Ingress went in yesterday. The Pods are Ready and the Service has endpoints, but from outside, a request to `http://shop.example/` returns a `404 Not Found` page. Customers must reach `shop` at `http://shop.example/`.",
     minutes: 4,
     concepts: ["Ingress", "IngressClass", "ingress-nginx"],
     setup: (c) => {
@@ -320,19 +325,24 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
         title: "http://shop.example/ reaches shop",
         body: "ingress-nginx routes `http://shop.example/` to the `shop` Service, on a port the Service has, and `shop` Pods answer behind it.",
         check: (x) => ingressServes(x.cluster, "shop.example", "/", "shop"),
-        hint: "kubectl get ingress shows a CLASS column; kubectl get ingressclass lists the classes this cluster has. An Ingress whose class no controller owns is ignored.",
+        hints: [
+          "The 404 page comes from ingress-nginx itself, so the request reached the controller and found no route. Look at what the Ingress says about which controller should handle it.",
+          "`kubectl get ingress` has a CLASS column. `kubectl get ingressclass` lists the classes this cluster has.",
+          "The Ingress asks for the class `traefik`. The only IngressClass here is `nginx`, owned by ingress-nginx. No controller claims the Ingress, so no route is built for it.",
+          "Change the Ingress's class to the one this cluster has, then request the host again.",
+        ],
         solution: { commands: [`kubectl patch ingress shop -p '{"spec":{"ingressClassName":"nginx"}}'`] },
       },
     ],
   },
   {
     slug: "allow-frontend",
-    start: ["kubectl get networkpolicy", "kubectl describe networkpolicy"],
+    start: ["kubectl get networkpolicy", "kubectl describe networkpolicy", "kubectl exec deploy/frontend -- wget -qO- --timeout=2 http://api"],
     difficulty: "medium",
     track: "networking",
-    title: "Lockdown broke checkout",
-    summary: "A default-deny policy did its job a little too well.",
-    brief: "Security rolled out `default-deny-ingress` this morning, and since then the frontend's calls to the API time out:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://api\n```\n\nThe `default-deny-ingress` policy must stay exactly as it is. `api` must accept traffic from `frontend` and from nothing else.",
+    title: "Checkout calls time out",
+    summary: "The frontend's calls to the API have timed out since this morning.",
+    brief: "Since this morning's security rollout, the frontend's calls to the API time out. Don't remove or edit anything security put in place. `api` must accept traffic from `frontend` and from nothing else.",
     minutes: 7,
     concepts: ["NetworkPolicy", "Default deny", "Ingress rules"],
     setup: (c) => {
@@ -352,7 +362,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const other = fakePod({ app: "debug" });
           return reaches(x.cluster, fe, "api", 80) && !reaches(x.cluster, other, "api", 80);
         },
-        hint: "NetworkPolicies add up: a Pod selected by several policies accepts what any one of them allows. Write a second policy that selects the api Pods and allows ingress from the frontend Pods.",
+        hints: [
+          "The Pods are fine. The packets are dropped on the way in. Find which object decides what may reach the `api` Pods, and what it allows now.",
+          "`kubectl describe networkpolicy default-deny-ingress` shows what the policy selects and allows. `kubectl get pods --show-labels` shows the labels you can select on.",
+          "The policy selects every Pod in the namespace and lists no ingress rules: `Selected pods are isolated for ingress connectivity`. With nothing allowed, every connection to `api` is dropped, which matches the timeout.",
+          "That policy has to stay as it is, and policies add up: a Pod accepts what any policy selecting it allows. Add a second policy that selects only the `api` Pods and allows ingress from the `frontend` Pods on port 80.",
+        ],
         solution: { yaml: ALLOW_FRONTEND },
       },
     ],
@@ -363,8 +378,8 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
     difficulty: "medium",
     track: "operations",
     title: "No logs from worker-2",
-    summary: "A DaemonSet that quietly skips one Node.",
-    brief: "`log-agent` is supposed to run on every worker Node, but the logging dashboard has had nothing from `worker-2` since it was set aside for GPU jobs last week. Whatever was done to `worker-2` must stay: ordinary apps must still keep off it.",
+    summary: "The logging dashboard has nothing from one of the workers.",
+    brief: "`log-agent` is supposed to run on every worker Node, but the logging dashboard has had nothing from `worker-2` for a week. `worker-2` is reserved for GPU jobs, and ordinary apps must still keep off it.",
     minutes: 6,
     concepts: ["DaemonSet", "Taints", "Tolerations"],
     setup: (c) => {
@@ -390,7 +405,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const on = new Set(readyPods(x.cluster, "log-agent").map((p) => p.spec?.nodeName));
           return on.has("worker-1") && on.has("worker-2");
         },
-        hint: "kubectl describe node worker-2 shows its Taints. A DaemonSet only places Pods on Nodes whose taints its Pod template tolerates.",
+        hints: [
+          "The DaemonSet wants a Pod on every worker, and one Node is missing a Pod. The scheduler skipped it on purpose. Look at what that Node says about who may run there.",
+          "`kubectl describe node worker-2` shows its Taints. `kubectl get pods -o wide` shows where the agents run.",
+          "`worker-2` has `Taints: gpu=true:NoSchedule`. A Pod without a matching toleration is kept off that Node, and the `log-agent` Pods have no tolerations.",
+          "Leave the taint, so ordinary apps stay away. Add a toleration for it to the DaemonSet's Pod template, and the DaemonSet controller places the missing Pod.",
+        ],
         solution: { commands: [`kubectl patch daemonset log-agent -p '{"spec":{"template":{"spec":{"tolerations":[{"key":"gpu","operator":"Equal","value":"true","effect":"NoSchedule"}]}}}}'`] },
       },
     ],
@@ -425,7 +445,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const running = podsWith(c, "app", "php-apache").filter(isPodReady).length;
           return settings && active && util !== undefined && sidecar && (d?.spec?.replicas ?? 1) > 1 && running > 1;
         },
-        hint: "kubectl describe hpa php-apache: read the conditions and the Warning events. Utilization is usage divided by request, summed over every container in the Pod.",
+        hints: [
+          "The HPA exists and the load is real, but it never acts. An autoscaler can only act on a number it can compute. Look at what it reports it is measuring.",
+          "`kubectl get hpa` shows the TARGETS column. `kubectl describe hpa php-apache` shows its conditions and warnings.",
+          "TARGETS reads `cpu: <unknown>/50%`, and the warning says `missing request for cpu in container log-shipper`. Utilization is usage divided by the request, over every container in the Pod, and one container has no CPU request. The Kubernetes docs say the autoscaler then takes no action for that metric.",
+          "Give the container that has no CPU request a small one. Keep the sidecar and leave the HPA's settings alone. Check that TARGETS shows a number, then give it a minute to scale.",
+        ],
         solution: { commands: ["kubectl set resources deployment php-apache -c log-shipper --requests=cpu=10m"] },
       },
     ],
@@ -436,7 +461,7 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
     difficulty: "hard",
     track: "operations",
     title: "The third replica",
-    summary: "Scaling up hits a placement rule that can't be met.",
+    summary: "Scaled from 2 to 3 replicas, and the new Pod stays Pending.",
     brief: "We scaled `cache` from 2 to 3 replicas last night, and the new one has been Pending ever since. We need all 3 running, still spread over both workers so that losing one Node can't take every replica down. Keep it at 3 replicas, keep a rule in the Deployment that spreads the replicas across Nodes, and keep app Pods off the control-plane Node. A short restart of `cache` is fine.",
     minutes: 12,
     concepts: ["Pod anti-affinity", "Topology spread constraints", "FailedScheduling"],
@@ -462,7 +487,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const nodes = new Set(pods.map((p) => p.spec?.nodeName));
           return d?.spec?.replicas === 3 && spreads && cpTainted && rolledOut(x.cluster, "cache") && pods.length === 3 && nodes.has("worker-1") && nodes.has("worker-2") && !nodes.has("control-plane");
         },
-        hint: "kubectl describe pod on the Pending Pod names the rule it can't meet: with required anti-affinity on kubernetes.io/hostname, two workers hold two replicas. A preferred rule spreads them without a hard limit. If the rollout then stalls, describe the new Pending Pod: the old Pods' own rule still applies to it, and a rolling update keeps them around until the new ones are Ready.",
+        hints: [
+          "Two replicas run and one is Pending. The third Pod isn't broken. It has nowhere it is allowed to go. Look at the rule the scheduler quotes for it.",
+          "`kubectl describe pods -l app=cache` shows the Events, including the Pending Pod's. `kubectl get pods -o wide` shows which Node each replica is on.",
+          "The Pending Pod's message mentions `pod anti-affinity rules`. The Deployment requires that no two `cache` Pods share a `kubernetes.io/hostname`. The two workers hold two replicas already, and the control plane is tainted, so the third has no Node.",
+          "A required rule is a hard limit. A preferred rule spreads replicas when it can and allows doubling up when it can't. Switch the Deployment to a preferred rule, or to a topology spread constraint. If the rollout stalls, describe the new Pending Pod: the old Pods still carry the required rule, and a rolling update keeps them until the new ones are Ready.",
+        ],
         solution: {
           commands: [
             `kubectl patch deployment cache -p '{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null},"template":{"spec":{"affinity":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":null,"preferredDuringSchedulingIgnoredDuringExecution":[{"weight":100,"podAffinityTerm":{"labelSelector":{"matchLabels":{"app":"cache"}},"topologyKey":"kubernetes.io/hostname"}}]}}}}}}'`,
@@ -473,12 +503,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
   },
   {
     slug: "storefront-gateway",
-    start: ["kubectl get ingress -n shop", "kubectl describe ingress storefront -n shop", "kubectl get networkpolicy -n shop"],
+    start: ["kubectl get ingress -n shop", "kubectl describe ingress storefront -n shop", "kubectl get networkpolicy -n shop", "curl http://shop.example/"],
     difficulty: "hard",
     track: "networking",
     title: "The shop won't load",
-    summary: "An Ingress, a Service and a locked-down namespace, and no page at the end of it.",
-    brief: "The new `storefront` in namespace `shop` went live this morning and nobody outside can load it:\n\n```bash\ncurl http://shop.example/\n```\n\nThe Pods are Ready and look healthy in their logs. `shop` is a locked-down namespace: its `default-deny-ingress` policy must stay exactly as it is, and the storefront Pods may only accept traffic from the ingress controller, not from other Pods in `shop` or anywhere else in the cluster.",
+    summary: "A new storefront that nobody outside can load.",
+    brief: "The new `storefront` in namespace `shop` went live this morning and nobody outside can load it: a request to `http://shop.example/` fails. The Pods are Ready and look healthy in their logs. `shop` is a locked-down namespace: its `default-deny-ingress` policy must stay exactly as it is, and the storefront Pods may only accept traffic from the ingress controller, not from other Pods in `shop` or anywhere else in the cluster.",
     minutes: 14,
     concepts: ["Ingress", "Named ports", "NetworkPolicy", "namespaceSelector"],
     setup: (c) => createAll(c, STOREFRONT),
@@ -496,7 +526,12 @@ export const NETWORKING_CHALLENGES: Challenge[] = [
           const strangers = [fakePod({ app: "debug" }, "shop"), fakePod({ app: "debug" }, "default"), fakePod({ "app.kubernetes.io/component": "controller" }, "default")];
           return fromCtrl && strangers.every((f) => !reaches(c, f, "storefront", 8080, "shop"));
         },
-        hint: "Read the status code, not just the page: 404 is no matching rule, 503 is a rule with no endpoints behind it, 504 means ingress-nginx got no answer at all. kubectl get endpoints -n shop, then compare the Service's targetPort with the Pods' container ports. After that, remember the controller is a Pod too, in namespace ingress-nginx.",
+        hints: [
+          "The error page comes from the ingress controller, so the request gets that far. Which error it is tells you how far along the path it got. Read the status code, not only the page.",
+          "`curl http://shop.example/` shows the code. `kubectl get endpoints -n shop` shows whether the Service has any backends, and `kubectl describe svc storefront -n shop` shows where it forwards.",
+          "A 503 with `<none>` under ENDPOINTS means the Service has no backends. Port 80 forwards to the named port `http`, but the Pods only name a port `web`, so no container port matches.",
+          "Point the Service's `targetPort` at a port the Pods have. If the request then ends in a 504, the controller can't reach the Pods, because `default-deny-ingress` blocks it like everything else. The controller is a Pod too, in the `ingress-nginx` namespace. Add a policy that lets that namespace reach only the storefront Pods, on their port.",
+        ],
         solution: { commands: [`kubectl patch service storefront -n shop --type=json -p '[{"op":"replace","path":"/spec/ports/0/targetPort","value":"web"}]'`], yaml: ALLOW_INGRESS_NGINX },
       },
     ],

@@ -14,9 +14,9 @@ test("incident: paged, fixed with kubectl, resolved, result saved", async ({ pag
   await run(page, `kubectl patch service shop-api -p '{"spec":{"selector":{"app":"shop-api"}}}'`);
   await setSpeed(page, "5×");
   await expect(page.getByText(/^Resolved in \d+:\d\d$/)).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("link", { name: "Share on X" })).toHaveAttribute("href", /x\.com\/intent\/post\?text=.*The%20API%20lost%20its%20Pods/);
+  await expect(page.getByRole("link", { name: "Share on X" })).toHaveAttribute("href", /x\.com\/intent\/post\?text=.*The%20website%20fails%20though%20the%20API%20Pods%20look%20fine/);
   await page.goto("/incidents/");
-  await expect(page.getByRole("link", { name: /The API lost its Pods/ })).toContainText(/best \d+:\d\d/);
+  await expect(page.getByRole("link", { name: /The website fails though the API Pods look fine/ })).toContainText(/best \d+:\d\d/);
   expect(errors).toEqual([]);
 });
 

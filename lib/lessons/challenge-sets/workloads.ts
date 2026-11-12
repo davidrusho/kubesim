@@ -162,7 +162,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
             pods.every((p) => runtimeEnv(x.cluster, p, "payments")?.DB_PASSWORD === PAYMENTS_PASSWORD)
           );
         },
-        hint: "kubectl describe pod on one of them shows the error in its Events. Compare the key it asks for with the keys kubectl describe secret payments-db lists.",
+        hints: [
+          "No container has started, although the image was pulled. So the Pods fail while the kubelet assembles the container's configuration. Look at what the kubelet says it couldn't do.",
+          "`kubectl describe pods -l app=payments` shows the Events. `kubectl describe secret payments-db` lists the keys in the Secret, with sizes only.",
+          "The warning says `couldn't find key password in Secret default/payments-db`. The Secret holds `username` and `db-password`. The Deployment asks for a key the Secret doesn't have, and the Secret itself is right, as the brief says.",
+          "Change the key that the Deployment's `DB_PASSWORD` variable refers to, so it names a key the Secret has. Leave the Secret alone.",
+        ],
         solution: { commands: [`kubectl patch deployment payments -p '{"spec":{"template":{"spec":{"containers":[{"name":"payments","env":[{"name":"DB_PASSWORD","valueFrom":{"secretKeyRef":{"name":"payments-db","key":"db-password"}}}]}]}}}}'`] },
       },
     ],
@@ -186,7 +191,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const ct = firstContainer(dep(x.cluster, "resizer"));
           return !!ct?.resources?.limits?.memory && same(ct.args, RESIZER_ARGS) && rolledOut(x.cluster, "resizer") && readyCount(x.cluster, "resizer") === 2;
         },
-        hint: "kubectl describe pod: look at Last State and its Reason. Then compare what the worker allocates (its args) with the container's limits.",
+        hints: [
+          "The workers restart again and again but log no error, so the program isn't failing by itself. Something outside it ends the container. Look at how the last run of a container ended.",
+          "`kubectl describe pods -l app=resizer` shows the container's `Last State`, and its limits.",
+          "`Last State: Terminated` with `Reason: OOMKilled`: the kernel killed the container for going over its memory limit. The limit is 100Mi, and the worker's args ask it to allocate 150M.",
+          "You can't change what the workers run, so change what they're allowed to use. Raise the memory limit above what the worker allocates, with room to spare, and keep the request at or below the limit.",
+        ],
         solution: { commands: ["kubectl set resources deployment resizer --requests=memory=200Mi --limits=memory=256Mi"] },
       },
     ],
@@ -225,7 +235,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
               runtimeEnv(c, p, p.spec!.containers[0].name)?.BACKFILL_FROM === "2026-01-01",
           );
         },
-        hint: "kubectl logs job/backfill says what the script is missing. A Job's Pod template can't be changed once it's created: you'll need a new Job (kubectl get job backfill -o yaml is a good start).",
+        hints: [
+          "The Job is Failed, which means it used up its retries. Each attempt left a Pod behind, with that attempt's output. Look there for why it failed.",
+          "`kubectl logs job/backfill` prints the output of one of the Job's Pods.",
+          "The script says `BACKFILL_FROM is not set (expected a date such as 2026-01-01)`, so the container needs that variable. The fields of a Job's Pod template can't be updated after creation, so you can't add it to this Job.",
+          "Read the Job's definition, delete the Job, and create a new one under the same name that sets the variable. `kubectl get job backfill -o yaml` prints the current definition to start from.",
+        ],
         solution: { commands: ["kubectl delete job backfill"], yaml: BACKFILL_FIXED },
       },
     ],
@@ -237,7 +252,7 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
     track: "workloads",
     title: "The cleanup never happens",
     summary: "A scheduled job that hasn't run once since it was deployed.",
-    brief: "The `cleanup` CronJob is meant to delete expired sessions every 5 minutes. It went out ten minutes ago, `kubectl get jobs` is still empty, and the sessions table keeps growing. Make it run on its intended schedule.",
+    brief: "The `cleanup` CronJob is meant to delete expired sessions every 5 minutes. It went out ten minutes ago, no Job has been created yet, and the sessions table keeps growing. Make it run on its intended schedule.",
     minutes: 6,
     concepts: ["CronJob", "Cron schedule", "suspend"],
     setup: (c) =>
@@ -270,7 +285,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
                 same(j.spec?.template.spec.containers[0]?.command, ["sh", "-c", CLEANUP_SCRIPT]),
             );
         },
-        hint: "kubectl get cronjob cleanup shows two columns worth a close look. Cron fields are minute, hour, day of month, month, day of week.",
+        hints: [
+          "No Job has ever been created. A CronJob creates one only when two things hold: it is switched on, and its schedule comes due. Check both.",
+          "`kubectl get cronjob cleanup` shows the schedule and whether it is suspended, in the SCHEDULE and SUSPEND columns.",
+          "SUSPEND is `True`, so the CronJob starts nothing. The schedule `0 */5 * * *` is also wrong: it means minute 0 of every fifth hour, not every five minutes.",
+          "Switch the CronJob on and write a schedule whose minute field means every five minutes. The five fields run minute, hour, day of month, month, day of week. A step value in the minute field does it.",
+        ],
         solution: { commands: [`kubectl patch cronjob cleanup -p '{"spec":{"schedule":"*/5 * * * *","suspend":false}}'`] },
       },
     ],
@@ -314,7 +334,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const pods = podsWith(c, "app", "cache");
           return (d?.spec?.replicas ?? 1) === 1 && bound(claimOf(d?.spec?.template.spec)) && rolledOut(c, "cache") && pods.length === 1 && pods.every((p) => up(p) && bound(claimOf(p.spec)));
         },
-        hint: "kubectl describe deployment cache: look at the Volumes. How long does that kind of volume live? Storage that outlives a Pod comes from a PersistentVolumeClaim.",
+        hints: [
+          "Redis writes its data to `/data`, and that data goes away when the Pod is replaced. So it matters what kind of storage sits behind that directory, and how long that storage lives. Look at what is mounted there.",
+          "`kubectl describe deployment cache` lists the Pod's Volumes.",
+          "The volume `data` is of type `EmptyDir`. An emptyDir is deleted for good when its Pod is removed from the Node, so a replacement Pod always starts empty.",
+          "Storage that outlives a Pod comes from a PersistentVolumeClaim. Create a claim, then change the Deployment's volume to use it in place of the emptyDir. Wait until the claim is Bound and the new Pod is Ready.",
+        ],
         solution: { commands: [`kubectl patch deployment cache --type=json -p '[{"op":"replace","path":"/spec/template/spec/volumes/0","value":{"name":"data","persistentVolumeClaim":{"claimName":"cache-data"}}}]'`], yaml: CACHE_CLAIM },
       },
     ],
@@ -357,7 +382,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const ran = jobs.some((j) => !!j.metadata.annotations?.["batch.kubernetes.io/cronjob-scheduled-timestamp"] && jobComplete(j) && same(j.spec?.template.spec.containers[0]?.command, ["sh", "-c", REPORT_NEW]));
           return ran && jobs.every((j) => runningFor(c, j) <= 600_000);
         },
-        hint: "kubectl get jobs: is anything still running from last night? kubectl describe cronjob report says why new runs aren't starting. Deleting a Job's Pod only makes the Job start another one from its own (old) template.",
+        hints: [
+          "The schedule fires and the command is fixed, yet nothing new appears. The CronJob is choosing not to start runs. Look for something from last night that never finished.",
+          "`kubectl get cronjob,jobs,pods` shows what is still running. `kubectl describe cronjob report` shows the CronJob's Events.",
+          "One Job from last night is still `Running`, far longer than a run should take. The Events say `Not starting job because prior execution is running and concurrency policy is Forbid`. The old run uses the old command and never ends, so every new run is skipped.",
+          "Remove the stuck Job. Deleting its Pod isn't enough: the Job starts another Pod from its own old template. After that, the next scheduled run uses the fixed command.",
+        ],
         solution: {
           commands: (c) => {
             const cj = obj<CronJob>(c, "CronJob", "report");
@@ -374,7 +404,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const deadline = cj.spec?.jobTemplate.spec.activeDeadlineSeconds;
           return cj.spec?.concurrencyPolicy === "Replace" || (deadline !== undefined && deadline <= 300);
         },
-        hint: "Look at the CronJob's concurrencyPolicy (kubectl explain cronjob.spec.concurrencyPolicy), and at what a Job's activeDeadlineSeconds does (kubectl explain job.spec.activeDeadlineSeconds).",
+        hints: [
+          "One hung run held up every later one. Think about what should happen when a run is still going as the next one comes due. Two settings are involved: what the CronJob does about it, and how long a single run may live.",
+          "`kubectl explain cronjob.spec.concurrencyPolicy` and `kubectl explain job.spec.activeDeadlineSeconds` describe the two settings.",
+          "`concurrencyPolicy` is `Forbid` here, so a run that never ends blocks every later one. `Replace` swaps a running Job for a new one. `activeDeadlineSeconds` ends any single run after that many seconds.",
+          "Use one of the two. If you set a deadline, it goes in the Job template inside the CronJob, and it has to be 300 seconds or less to end a hung run within 5 minutes.",
+        ],
         solution: { commands: [`kubectl patch cronjob report -p '{"spec":{"jobTemplate":{"spec":{"activeDeadlineSeconds":240}}}}'`] },
       },
     ],
@@ -385,7 +420,7 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
     difficulty: "hard",
     track: "config",
     title: "Yesterday's page",
-    summary: "A ConfigMap edit that the site never picked up.",
+    summary: "An edited page that the site never shows.",
     brief: "Marketing changed the home page in the ConfigMap `site-content` this morning (the new text is correct), but `http://site` still shows the spring sale. They'll keep editing that ConfigMap all summer, and nobody wants to restart Pods every time they do.",
     minutes: 10,
     concepts: ["ConfigMap volumes", "subPath", "Rollout restart"],
@@ -422,7 +457,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const pods = podsWith(c, "app", "site").filter(up);
           return pods.length === 2 && endpointCount(c, "site") === 2 && pods.every((p) => servedPage(c, p) === SUMMER_PAGE);
         },
-        hint: "kubectl exec into a Pod and cat the file: it's the old one. kubectl describe pod shows how it's mounted. Pods started now would get the current ConfigMap.",
+        hints: [
+          "The ConfigMap is right and the Pods are Running, yet they serve old text. Compare what the ConfigMap holds with what a Pod can see.",
+          "`kubectl exec deploy/site -- cat /usr/share/nginx/html/index.html` shows what a Pod serves. `kubectl get configmap site-content -o yaml` shows what the ConfigMap holds.",
+          "The file in the Pod has the spring sale and the ConfigMap holds the summer sale. The Pods read the file when they started, and nothing has refreshed it. A Pod started now would read the current ConfigMap.",
+          "Have the Deployment replace its Pods so they start fresh. Use a rollout, not a delete of each Pod by hand.",
+        ],
         solution: { commands: ["kubectl rollout restart deployment site"] },
       },
       {
@@ -434,7 +474,12 @@ export const WORKLOADS_CHALLENGES: Challenge[] = [
           const pods = podsWith(c, "app", "site");
           return !!cm && !(cm as { immutable?: boolean }).immutable && rolledOut(c, "site") && pods.length === 2 && pods.every((p) => up(p) && liveMounted(p));
         },
-        hint: "A ConfigMap volume is updated in place, but a file mounted with subPath is a one-time copy that never changes. Mount the whole volume over the html directory instead. The volumeMounts list has to be replaced, not merged: kubectl edit, or a JSON patch.",
+        hints: [
+          "A fresh start fixes today's page, but not the next edit. How a file gets into the container decides whether later changes arrive. Look at how this file is mounted.",
+          "`kubectl describe pods -l app=site` lists the Mounts for each container.",
+          "The mount line ends in `(rw,path=\"index.html\")`. That `path` is a subPath mount: the file is put in place once, when the container starts. The Kubernetes docs say a container using a ConfigMap as a subPath volume mount will not receive ConfigMap updates.",
+          "Mount the whole ConfigMap volume over the html directory instead of one file inside it. The old file mount has to go: an edit or a JSON patch can replace the whole `volumeMounts` list. Then let the Pods roll again.",
+        ],
         solution: { commands: [SITE_LIVE_MOUNT] },
       },
     ],

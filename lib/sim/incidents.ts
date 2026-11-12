@@ -3,7 +3,9 @@
 // the shop has served cleanly, with everything healthy, for RESOLVE_MS of cluster time.
 // A Daily Incident picks one per day, the same for everyone.
 
-import type { Cluster, Deployment, NetworkPolicy, Node, Pod, ResourceQuota, Secret, Service, StatefulSet } from "@/lib/engine";
+import { EXAM_NODES, controlPlaneHealth, type Cluster, type Deployment, type NetworkPolicy, type Node, type NodeConfig, type Pod, type ResourceQuota, type Secret, type Service, type StatefulSet } from "@/lib/engine";
+import { KUBELET_CONFIG, MANIFEST_DIR, hostWrite } from "@/lib/engine/host";
+import { restartService, setEnabled, stopService } from "@/lib/engine/hostservices";
 import { BLUEPRINTS } from "./blueprints";
 
 export const SHOP = "shop";
@@ -28,6 +30,10 @@ export interface Incident {
   fix: string;
   /** What happened, and the lesson it carries, shown once resolved. */
   debrief: string;
+  /** The cluster's Nodes, when the Incident works on node hosts (`EXAM_NODES`: `controlplane` and `node01`, ADR 0003 decision 7). Absent: the default cluster. */
+  nodes?: NodeConfig[];
+  /** The read-only commands the first press of Hint reveals, when the default `kubectl get pods` / events pair is not where this one starts. */
+  start?: string[];
 }
 
 /** The manifest for the shop, and how to build the cluster an Incident starts from. */
@@ -40,10 +46,31 @@ const rollout = (c: Cluster, name: string, cause: string, edit: (spec: Deploymen
   c.replace({ ...d, metadata: { ...d.metadata, annotations: { ...d.metadata.annotations, "kubernetes.io/change-cause": cause } }, spec });
 };
 
+/** Edits a file on a Node's host the way a colleague's editor would: the mode stays, and autosave notices. */
+const hostEdit = (c: Cluster, node: string, path: string, edit: (text: string) => string) => {
+  const host = c.state.hosts[node];
+  hostWrite(host, path, edit(host.files[path].content), c.now);
+  c.hostChanged();
+};
+
+/** Scales a Deployment the way `kubectl scale` does: only `spec.replicas` changes. */
+const scale = (c: Cluster, name: string, replicas: number) => {
+  const d = c.get<Deployment>("Deployment", "default", name);
+  c.update(d, (x) => void (x.spec!.replicas = replicas));
+};
+
+/** Time passes before the Learner is paged, so what the page says is already what kubectl shows (capture: NotReady at ~52 s; the Pods are evicted only after another 300 s). */
+const settle = (c: Cluster, ms: number) => c.advance(ms);
+const NOT_READY_MS = 56_000;
+
+const SCHEDULER_MANIFEST = `${MANIFEST_DIR}/kube-scheduler.yaml`;
+const APISERVER_MANIFEST = `${MANIFEST_DIR}/kube-apiserver.yaml`;
+const KCM_MANIFEST = `${MANIFEST_DIR}/kube-controller-manager.yaml`;
+
 export const INCIDENTS: Incident[] = [
   {
     slug: "lost-password",
-    title: "The database lost its password",
+    title: "Every page of the shop fails",
     difficulty: "easy",
     page: "shop-web is returning 503s",
     brief:
@@ -63,7 +90,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "lost-endpoints",
-    title: "The API lost its Pods",
+    title: "The website fails though the API Pods look fine",
     difficulty: "easy",
     page: "shop-web is returning 503s",
     brief:
@@ -83,7 +110,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "bad-config",
-    title: "A config change broke the API",
+    title: "Every request fails and every Pod is Ready",
     difficulty: "medium",
     page: "shop-web is returning 503s",
     brief:
@@ -104,7 +131,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "locked-out",
-    title: "Locked out of the database",
+    title: "The API says it can't reach the database",
     difficulty: "medium",
     page: "shop-web is returning 503s",
     brief:
@@ -127,7 +154,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "cache-crashloop",
-    title: "The cache keeps crashing",
+    title: "The shop fails in waves",
     difficulty: "medium",
     page: "shop-web is failing on and off",
     brief:
@@ -147,7 +174,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "node-down",
-    title: "A Node went down with the database",
+    title: "The shop is still down after its Pods moved",
     difficulty: "hard",
     page: "shop-web is returning 503s",
     brief:
@@ -167,7 +194,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "scaled-to-zero",
-    title: "The wrong Deployment was scaled to zero",
+    title: "The shop stopped answering its customers",
     difficulty: "easy",
     page: "shop-web is returning 503s",
     brief:
@@ -187,7 +214,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "wrong-target-port",
-    title: "The API Service sends traffic to the wrong port",
+    title: "Every request fails though the API Pods are Ready",
     difficulty: "easy",
     page: "shop-web is returning 503s",
     brief:
@@ -207,7 +234,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "bad-image-tag",
-    title: "The cache's new image doesn't exist",
+    title: "The cache Pod never starts again",
     difficulty: "easy",
     page: "shop-web is returning 503s",
     brief:
@@ -228,7 +255,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "deleted-db-service",
-    title: "Someone deleted the database's Service",
+    title: "The API can't find the database",
     difficulty: "medium",
     page: "shop-web is returning 503s",
     brief:
@@ -245,7 +272,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "renamed-secret-key",
-    title: "A Secret key was renamed",
+    title: "The database keeps crashing",
     difficulty: "medium",
     page: "shop-web is returning 503s",
     brief:
@@ -266,7 +293,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "drained-nodes",
-    title: "Both workers were left drained",
+    title: "Every shop Pod is Pending",
     difficulty: "medium",
     page: "shop-web has stopped getting traffic",
     brief:
@@ -293,7 +320,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "dns-scaled-down",
-    title: "Nobody can find anything",
+    title: "The Pods are fine but no customer gets through",
     difficulty: "medium",
     page: "shop-web has stopped getting traffic",
     brief:
@@ -313,7 +340,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "db-too-big",
-    title: "The database asked for too much memory",
+    title: "The database Pod went away and never came back",
     difficulty: "hard",
     page: "shop-web is returning 503s",
     brief:
@@ -335,7 +362,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "dns-egress",
-    title: "A NetworkPolicy forgot about DNS",
+    title: "The API can't reach the database or the cache",
     difficulty: "hard",
     page: "shop-web is returning 503s",
     brief:
@@ -365,7 +392,7 @@ export const INCIDENTS: Incident[] = [
   },
   {
     slug: "quota-limits",
-    title: "A quota the database couldn't meet",
+    title: "The database Pod never came back and nothing is Pending",
     difficulty: "hard",
     page: "shop-web is returning 503s",
     brief:
@@ -387,6 +414,174 @@ export const INCIDENTS: Incident[] = [
     fix: "```bash\nkubectl set resources statefulset shop-db --limits=memory=512Mi\n```",
     debrief:
       "A ResourceQuota that caps limits.memory makes every new Pod in the namespace declare a memory limit, or the API server rejects it. Pods that were already running aren't checked, so nothing broke until one was recreated. A rejected Pod is never created, so the error shows up on its controller (the StatefulSet's FailedCreate Events), not on a Pod. The web and API Pods have no limits either and would fail the same way on their next rollout; a LimitRange can give every container a default limit.",
+  },
+  // ------------------------------------------------------------ the CKA's node and control-plane faults (ADR 0003)
+  // Each reproduces a scenario of docs/research/real-cluster-captures-control-plane.md (kind, with kubeadm's paths
+  // and text from real-cluster-captures-kubeadm.md). They run on EXAM_NODES and are solved from the terminal alone.
+  {
+    // Capture Scenario 1: `systemctl stop kubelet` on the worker. Node NotReady ~52 s later, the Pod stays 1/1 Running
+    // until eviction, Ready ~3 s after `systemctl start kubelet`.
+    slug: "node-not-ready",
+    title: "node01 shows NotReady",
+    difficulty: "easy",
+    nodes: EXAM_NODES,
+    start: ["kubectl get nodes", "kubectl get pods -o wide"],
+    page: "node01 shows NotReady",
+    brief:
+      "Ops noticed that node01 went NotReady a few minutes ago. Nobody has touched the cluster since the weekend maintenance. The shop's Pods on it still say Running, but the Node no longer reports in.",
+    break: (c) => {
+      stopService(c, "node01", "kubelet");
+      settle(c, NOT_READY_MS);
+    },
+    hints: [
+      "The control plane has stopped hearing from node01. Whatever should be telling it is on node01 itself, not in the API: log in to the Node.",
+      "On the Node, systemd runs the agent that reports to the control plane. Ask it for the state of that service, and read its recent log.",
+      "`systemctl status kubelet` shows `inactive (dead)`: the service was stopped cleanly, and nothing is restarting it.",
+      "Start the kubelet service (as root), then check from the control plane that the Node is Ready again.",
+    ],
+    fix: "```bash\nssh node01\nsudo -i\nsystemctl start kubelet\nexit\nexit\n```\n\nThen `kubectl get nodes`: node01 is Ready within a few seconds.",
+    debrief:
+      "The kubelet on node01 had been stopped. The kubelet is the Node's agent: it posts heartbeats to the API server, so with it gone the Node went NotReady after the 50 s grace period. The containers already running kept running, because the container runtime is a separate service, and the Pods would only have been evicted after another five minutes. `systemctl status kubelet` and `journalctl -u kubelet` on the Node are where to look first, and `systemctl start kubelet` brought it back.",
+  },
+  {
+    // Capture Scenario 2: `systemctl disable kubelet` + `systemctl stop kubelet` ("did not come back after reboot").
+    // Recovery with `systemctl enable --now kubelet`, Ready <= 3 s. Resolution here also needs the unit enabled (shopProblem).
+    slug: "node-lost-after-reboot",
+    title: "node01 did not rejoin after its reboot",
+    difficulty: "medium",
+    nodes: EXAM_NODES,
+    start: ["kubectl get nodes", "kubectl get pods -o wide"],
+    page: "node01 is NotReady after its reboot",
+    brief:
+      "node01 was rebooted for kernel patching, and it never rejoined the cluster. The host itself is up, and you can log in to it.",
+    break: (c) => {
+      setEnabled(c, "node01", "kubelet", false);
+      stopService(c, "node01", "kubelet");
+      settle(c, NOT_READY_MS);
+    },
+    hints: [
+      "node01 is up but the control plane hears nothing from it. Log in to the Node and see what its agent is doing.",
+      "Ask systemd about the kubelet service. Its status shows two separate settings: whether it is running now, and whether it starts at boot.",
+      "`systemctl status kubelet` says `inactive (dead)` and `disabled`. `systemctl is-enabled kubelet` confirms the second one. Starting it alone would fail the same way at the next reboot.",
+      "Enable and start it in one command, then check from the control plane that node01 is Ready.",
+    ],
+    fix: "```bash\nssh node01\nsudo -i\nsystemctl enable --now kubelet\nexit\nexit\n```\n\nThen `kubectl get nodes`: node01 is Ready within a few seconds.",
+    debrief:
+      "The kubelet was both stopped and disabled, so it did not start when the Node booted. `systemctl start kubelet` would have brought the Node back until the next reboot; `systemctl enable --now kubelet` enables the unit (a symlink in multi-user.target.wants) and starts it in one step. After a Node reboot that does not recover, check `systemctl status kubelet` for both Loaded: …; enabled/disabled and Active:.",
+  },
+  {
+    // Capture 3c: --kubeconfig=/etc/kubernetes/scheduler.conf -> schedulr.conf in kube-scheduler.yaml. The container exits,
+    // CrashLoopBackOff 15-60 s later; `crictl logs` shows `stat /etc/kubernetes/schedulr.conf: no such file or directory`;
+    // 1/1 again 26 s after the fix; a waiting Pod is Running ~6 s after that.
+    slug: "pods-stuck-pending",
+    title: "New Pods stay Pending",
+    difficulty: "hard",
+    nodes: EXAM_NODES,
+    start: ["kubectl get pods -o wide", "kubectl get pods -n kube-system"],
+    page: "the new shop-web Pods are stuck Pending",
+    brief:
+      "The shop was scaled up for a sale, and the extra shop-web Pods have sat in Pending ever since, with no events on them. The Pods that were already running are fine, and nothing else in the cluster seems to be misbehaving.",
+    break: (c) => {
+      hostEdit(c, "controlplane", SCHEDULER_MANIFEST, (t) => t.replace("--kubeconfig=/etc/kubernetes/scheduler.conf", "--kubeconfig=/etc/kubernetes/schedulr.conf"));
+      // The kubelet picks the changed manifest up within seconds. Scale up only once the old scheduler is gone, or it would still place the new Pods.
+      c.advance(12_000);
+      scale(c, `${SHOP}-web`, 5);
+      c.advance(2_000); // the new Pods exist, and are Pending, when the Learner arrives
+    },
+    hints: [
+      "A Pod that has no events and no Node was never looked at by anything. Something that is meant to place Pods is not doing it. What runs in kube-system?",
+      "Look at the control-plane Pods in kube-system. One of them is not Running.",
+      "The control-plane components are static Pods: their manifests are files on the control-plane Node, in /etc/kubernetes/manifests. Log in there and ask the container runtime for the failed container's logs (as root).",
+      "The scheduler's log ends with a `stat` error for a file under /etc/kubernetes that does not exist. Compare the path with what `ls /etc/kubernetes` shows.",
+      "Correct the path in the scheduler's manifest. The kubelet notices the change on its own within seconds and starts a fresh container; the waiting Pods are then placed.",
+    ],
+    fix: "```bash\nssh controlplane\nsudo -i\nvi /etc/kubernetes/manifests/kube-scheduler.yaml\nexit\nexit\n```\n\nIn the editor change `--kubeconfig=/etc/kubernetes/schedulr.conf` back to `--kubeconfig=/etc/kubernetes/scheduler.conf` and save. Nothing needs restarting: the kubelet re-reads the manifest.",
+    debrief:
+      "kube-scheduler's manifest pointed --kubeconfig at a file that does not exist, so the container exited on start and went into CrashLoopBackOff. Without a scheduler nothing assigns Pods to Nodes: new Pods stay Pending with no Node and no events, while Pods already running are unaffected. Static Pod manifests live in /etc/kubernetes/manifests and the kubelet applies an edit by itself. `crictl ps -a` and `crictl logs <id>` show the failed container's own message.",
+  },
+  {
+    // Capture 4a: --etcd-servers=https://127.0.0.1:2379 -> :2399. kubectl fails within seconds, the container retries etcd ~20 s
+    // and then exits; kubectl works again ~22 s after the fix.
+    slug: "cluster-unreachable",
+    title: "Every request to the cluster is refused",
+    difficulty: "hard",
+    nodes: EXAM_NODES,
+    start: ["kubectl get nodes"],
+    page: "every request to the cluster is refused",
+    brief:
+      "A colleague was tuning the control plane and left for the day. Now every command that talks to the cluster fails with `connection refused`, for everyone. The shop's Pods are still serving customers.",
+    break: (c) => {
+      hostEdit(c, "controlplane", APISERVER_MANIFEST, (t) => t.replace("https://127.0.0.1:2379", "https://127.0.0.1:2399"));
+      settle(c, 8_000); // the kubelet's scan picks the change up: kubectl is already refused when the Learner arrives
+    },
+    hints: [
+      "kubectl cannot reach the API server, so it cannot tell you anything about it. Go to where the API server runs: the control-plane Node.",
+      "The API server is a static Pod there, so the container runtime sees it even when the API does not answer. Log in as root and list the containers, including the ones that exited.",
+      "`crictl ps -a` shows kube-apiserver Exited, with a rising ATTEMPT count. Read the logs of the latest attempt.",
+      "The log says it cannot reach etcd at 127.0.0.1:2399. Compare that port with the one etcd's manifest in /etc/kubernetes/manifests listens on for clients.",
+      "Fix the --etcd-servers port in kube-apiserver.yaml. The kubelet restarts the container by itself; kubectl works again within half a minute.",
+    ],
+    fix: "```bash\nssh controlplane\nsudo -i\nvi /etc/kubernetes/manifests/kube-apiserver.yaml\nexit\nexit\n```\n\nIn the editor change `--etcd-servers=https://127.0.0.1:2399` back to `--etcd-servers=https://127.0.0.1:2379` and save. Give it up to half a minute, then `kubectl get nodes`.",
+    debrief:
+      "The API server's manifest pointed --etcd-servers at port 2399, where nothing listens (etcd serves clients on 2379), so it could not start: it retried for about 20 seconds and then exited. With the API server down kubectl is refused, and nothing in the cluster can be changed or reconciled, while the containers already running keep serving traffic. When kubectl itself is dead, use `crictl` on the control-plane Node: it talks to the container runtime directly. The apiserver's logs name the failing address.",
+  },
+  {
+    // Capture Scenario 5: kube-controller-manager.yaml moved out of /etc/kubernetes/manifests. The mirror Pod is gone in <= 5 s,
+    // a scale is accepted but no ReplicaSet or Pod follows; Pods appear ~21 s after the manifest is back.
+    slug: "scale-does-nothing",
+    title: "Scaling up creates no Pods",
+    difficulty: "hard",
+    nodes: EXAM_NODES,
+    start: ["kubectl get deployments", "kubectl get pods -n kube-system"],
+    page: "shop-api was scaled up and no new Pods came",
+    brief:
+      "Ahead of the sale somebody scaled shop-api from 2 to 4 replicas. The command was accepted, and that was an hour ago. There are still only two API Pods, and none of them is Pending. Nothing else looks wrong.",
+    break: (c) => {
+      const host = c.state.hosts.controlplane;
+      host.files["/tmp/kube-controller-manager.yaml"] = { ...host.files[KCM_MANIFEST], mtime: c.now };
+      delete host.files[KCM_MANIFEST];
+      c.hostChanged();
+      // The kubelet drops the static Pod within seconds. Scale only once the old controller-manager is gone, or it would still create the Pods.
+      c.advance(8_000);
+      scale(c, `${SHOP}-api`, 4);
+    },
+    hints: [
+      "The Deployment wants 4 and has 2, and there is not even a Pending Pod. Something that turns a Deployment's replica count into ReplicaSets and Pods did not run. Is every component in kube-system there?",
+      "List the control-plane Pods in kube-system. One of the four is missing altogether, not crashing.",
+      "Those Pods are static Pods, started from manifest files on the control-plane Node. Log in as root and list /etc/kubernetes/manifests.",
+      "Only three manifests are there. Somebody moved the fourth one out. Look in /tmp.",
+      "Move kube-controller-manager.yaml back into /etc/kubernetes/manifests. The kubelet starts it within seconds; the missing Pods appear about twenty seconds later.",
+    ],
+    fix: "```bash\nssh controlplane\nsudo -i\nmv /tmp/kube-controller-manager.yaml /etc/kubernetes/manifests/\nexit\nexit\n```\n\nThen `kubectl get deployments`: shop-api reaches 4/4 within about half a minute.",
+    debrief:
+      "kube-controller-manager's manifest had been moved out of /etc/kubernetes/manifests, so the kubelet removed the static Pod. The API server still accepted the scale (it only stores spec.replicas), but the Deployment and ReplicaSet controllers live in the controller-manager, so no ReplicaSet was updated and no Pod was created. Because nothing was created, nothing was Pending: the missing Pod is not in the list. Putting the manifest back is enough; the kubelet watches the directory.",
+  },
+  {
+    // Capture Scenario 6: containerRuntimeEndpoint in /var/lib/kubelet/config.yaml with one extra `k` + `systemctl restart kubelet`.
+    // The service sits in `activating (auto-restart)`, NotReady ~51 s later, Ready ~4 s after the fix.
+    slug: "node-notready-after-change",
+    title: "node01 stays NotReady",
+    difficulty: "hard",
+    nodes: EXAM_NODES,
+    start: ["kubectl get nodes", "kubectl get pods -o wide"],
+    page: "node01 shows NotReady",
+    brief:
+      "A colleague was working on node01 this morning. Shortly afterwards the Node went NotReady, and it has stayed that way. Its Pods are still running, and the host is up: you can log in to it.",
+    break: (c) => {
+      hostEdit(c, "node01", KUBELET_CONFIG, (t) => t.replace("containerd.sock", "containerd.sockk"));
+      restartService(c, "node01", "kubelet");
+      settle(c, NOT_READY_MS);
+    },
+    hints: [
+      "The Node stopped reporting. Log in to node01 and ask whether the agent that reports for it is running.",
+      "`systemctl status kubelet` is not `active (running)`: it says `activating (auto-restart)`. It starts, fails and is started again. Read why in `journalctl -u kubelet --no-pager`.",
+      "The last lines before each restart say `command failed` and name an endpoint it could not dial: a unix socket path that does not exist.",
+      "The path is set in /var/lib/kubelet/config.yaml. Compare it with the socket the container runtime really listens on: `ls /var/run/containerd`.",
+      "Correct the containerRuntimeEndpoint in config.yaml, then restart the kubelet. Check from the control plane that node01 is Ready.",
+    ],
+    fix: "```bash\nssh node01\nsudo -i\nvi /var/lib/kubelet/config.yaml\nsystemctl restart kubelet\nexit\nexit\n```\n\nIn the editor change `containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sockk` back to `unix:///var/run/containerd/containerd.sock` and save. Then `kubectl get nodes`: node01 is Ready within a few seconds.",
+    debrief:
+      "The kubelet's config.yaml named a container-runtime socket with an extra `k`, so on every start the kubelet failed to connect to containerd and exited; systemd kept restarting it (`activating (auto-restart)`). The containers kept running, as containerd was healthy, but with no kubelet the Node stopped reporting and went NotReady. Edits to config.yaml only take effect when the kubelet restarts, so the fix needs `systemctl restart kubelet` after the edit. For a failing service, `journalctl -u kubelet` names the cause.",
   },
 ];
 
@@ -425,6 +620,29 @@ export function shopProblem(c: Cluster): string | null {
   if (!db || (db.status?.readyReplicas ?? 0) < (db.spec?.replicas ?? 1)) return "The database isn't ready.";
   const looping = c.list<Pod>("Pod", "default").find((p) => p.metadata.name.startsWith(SHOP) && p.status?.containerStatuses?.some((s) => s.state.waiting?.reason === "CrashLoopBackOff"));
   if (looping) return `${looping.metadata.name} is crash-looping.`;
+  return platformProblem(c);
+}
+
+/**
+ * What's still wrong beneath the shop, for the Incidents that break a Node's kubelet or the control plane (ADR 0003): a kubelet that
+ * is stopped, failing or disabled, an API server that does not answer, a controller-manager or scheduler that is not running. It
+ * reads the engine's own state, so it holds while kubectl is refused. The text names a symptom, never the cause: the pager shows it
+ * before any hint is asked for. Null on a cluster with no control plane, and on a healthy one.
+ */
+function platformProblem(c: Cluster): string | null {
+  const health = controlPlaneHealth(c);
+  if (!health.api) return "The cluster isn't answering.";
+  for (const [name, host] of Object.entries(c.state.hosts)) {
+    const kubelet = host.services.kubelet;
+    if (kubelet.active !== "active") {
+      // kubectl shows NotReady once the grace period has run out; until then the Node still says Ready and the message must not claim otherwise.
+      const ready = (c.raw("Node", undefined, name) as unknown as Node | undefined)?.status?.conditions.find((q) => q.type === "Ready")?.status === "True";
+      return ready ? "The cluster isn't healthy yet." : `Node ${name} isn't reporting in.`;
+    }
+    // Running but disabled: the Node reports Ready now, and would not rejoin after a restart (capture Scenario 2).
+    if (!kubelet.enabled) return "A Node would not rejoin after a restart.";
+  }
+  if (!health.kcm || !health.scheduler) return "The cluster isn't healthy yet.";
   return null;
 }
 

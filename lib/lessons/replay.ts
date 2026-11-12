@@ -3,10 +3,10 @@
 
 import type { Cluster } from "@/lib/engine";
 import { applyYaml, runKubectl } from "@/lib/kubectl/kubectl";
-import { solutionCommands, type Lesson } from "./lessons";
+import { solutionCommands, type Lesson, type Step } from "./lessons";
 
 /** Runs the solutions of the first `count` Steps; returns the command history. Throws if a Step can't be reached. */
-export function replaySteps(lesson: Lesson, c: Cluster, count: number, history: string[] = []): string[] {
+export function replaySteps(lesson: Pick<Lesson, "slug"> & { steps: Pick<Step, "title" | "check" | "solution">[] }, c: Cluster, count: number, history: string[] = []): string[] {
   const ctx = { cluster: c, namespace: "default" };
   for (let i = 0; i < count; i++) {
     const step = lesson.steps[i];

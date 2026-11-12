@@ -9,8 +9,10 @@ if (!posthogKey || !posthogHost) {
       ? "NEXT_PUBLIC_POSTHOG_HOST"
       : "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN";
 
-    throw new Error(
-      `${missingVariable} variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once ${missingVariable} is configured`,
+    // Warn rather than throw: an exception here stops the client from booting, so pages
+    // such as the Incident player never get past their loading screen in `next dev`.
+    console.warn(
+      `${missingVariable} variable required by PostHog is missing or un-configured, so analytics are off. This warning stops appearing once ${missingVariable} is configured`,
     );
   }
 } else {

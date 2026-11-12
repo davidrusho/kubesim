@@ -59,7 +59,7 @@ Challenges live in [`lib/lessons/challenges.ts`](lib/lessons/challenges.ts). A C
 
 - `setup` builds the broken cluster. The `brief` describes the symptom the way a colleague would ("the shop page returns 503 since this morning"), never the cause.
 - Each goal's `body` states the outcome ("customers can reach the shop through the `shop` Service"), and its Check tests exactly that. Goals can be met in any order.
-- `hint` nudges towards where to look; `solution` is one way to fix it.
+- `hints` is the goal's ladder, 3 or 4 entries, each a little more direct than the last: where to look (name no command), which read-only command shows it, what that output means (the cause), and what to change (stop short of the full fix). `solution` is one way to fix it and is the last rung. Every command a hint names in backticks must run in the simulator: add it to `PROBES` in `lib/lessons/hints.commands.test.ts` with what its output must contain. The Learner's first press of Hint reveals `start` (read-only commands, defaulting to `kubectl get pods -o wide` and `kubectl get events --sort-by=.lastTimestamp`), so keep every command out of the `brief`, goal titles and goal bodies, including inline `code` and fenced blocks: put a command that reproduces the symptom in `start`. `lib/lessons/hints.test.ts` fails if one slips in.
 - `lessons.test.ts` asserts no goal passes right after setup, then replays every solution.
 
 ## Add a practice exam task
@@ -99,6 +99,12 @@ A scene can also show how things nest and where they sit. All of this is optiona
 - **Building up.** A step's `add` lists boxes and edges that appear from that step on (anything no step adds is always drawn), and its `status` sets a Pod's status from then on. The picture is cropped to the union of every step's content, so its height never changes between steps, and a region is drawn only as tall as what is in it at that step. A step's `move` puts a box somewhere else from then on (a Pod from the unscheduled area onto a Node; mark it `unbound: true` and the tests check it stays off every Node until then), and its `sub` changes a chip's subtitle (a version number).
 
 Draw new scenes 848 wide, the width of the Concepts column, so the 12px text is 12px on screen. `components/illustrations/scenes.test.ts` checks every scene, step by step and against the rendered drawing: ids and references, nesting and that every box's parent is on screen, outside actors, entry markers, icon files, text that fits its box, boxes that overlap, edges that run through a box, edge labels that cover a box, a frame that is identical in every step and holds everything shown, a legend entry for every kind of line on screen, Pods that a step moves onto a Node being marked `unbound` and staying off every Node until then, and Pods that straddle a Node's edge.
+
+## Add an Incident
+
+Incidents live in [`lib/sim/incidents.ts`](lib/sim/incidents.ts): a `page`, a `brief`, a `break` function, a `hints` ladder (each a little more direct), a `fix` and a `debrief`. Like Challenges, they show no command up front: the first press of Hint reveals where to start, each further press the next entry of `hints`, then "Show the fix". Keep commands out of `page` and `brief`. The Learner's hints used and whether they saw the fix are saved with the result (`components/learn/incidentProgress.ts`; for Challenges `challengeUsage.ts`) and shown in the debrief and on the index pages.
+
+Lessons, Incidents and Challenges open in the Split layout on desktop (the Cluster View in one card, the step and the terminal in cards beside it); Spotlight stays one click away in the header, and the Learner's choice is remembered.
 
 ## Fix or extend the engine
 

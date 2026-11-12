@@ -96,10 +96,10 @@ export const SECURITY_CHALLENGES: Challenge[] = [
     start: ["kubectl get pods", "kubectl describe pods -l app=worker"],
     difficulty: "easy",
     track: "security",
-    title: "Non-root, non-starting",
-    summary: "A new non-root policy, and Pods that never get as far as starting.",
+    title: "Pods that won't start",
+    summary: "Neither Pod of a Deployment has started since this morning's change.",
     brief:
-      "The platform team now requires every workload to run as a non-root user, and added `runAsNonRoot: true` to the `worker` Deployment this morning. Since then neither `worker` Pod has started. `worker` is a plain busybox loop that doesn't care which user it runs as. Keep the policy: removing `runAsNonRoot` or setting it to `false` doesn't count.",
+      "Since this morning's change neither `worker` Pod has started. `worker` is a plain busybox loop that doesn't care which user it runs as. The Deployment must keep `runAsNonRoot: true`: removing it or setting it to `false` doesn't count.",
     minutes: 4,
     concepts: ["securityContext", "runAsNonRoot", "CreateContainerConfigError"],
     setup: (c) =>
@@ -113,7 +113,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
         title: "worker running as a non-root user",
         body: "Both `worker` Pods are Running and Ready, `runAsNonRoot` is still in force, and they run as a non-zero UID.",
         check: (x) => allPods(x.cluster, "worker", "default", 2, nonRootUser),
-        hint: "kubectl describe pod: read the kubelet's Warning at the bottom. The busybox image doesn't name a user, so it would run as root (UID 0) unless the Pod picks one.",
+        hints: [
+          "The Pods never run a container. The image is pulled, and then something stops the container being created. Look at the last warning the kubelet raised.",
+          "`kubectl describe pods -l app=worker` shows the warning in the Events.",
+          "The warning says `container has runAsNonRoot and image will run as root`. The Kubernetes docs say that with `runAsNonRoot: true` the kubelet checks the image and fails to start the container if it would run as UID 0. The busybox image doesn't name a user, so the kubelet sees root.",
+          "Keep `runAsNonRoot` and name a user: a non-zero UID in the securityContext. A Pod-level securityContext applies to every container in it.",
+        ],
         solution: { commands: [`kubectl patch deployment worker -p '{"spec":{"template":{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":1000}}}}}'`] },
       },
     ],
@@ -123,10 +128,10 @@ export const SECURITY_CHALLENGES: Challenge[] = [
     start: ["kubectl get pods -l app=agent", "kubectl logs deploy/agent"],
     difficulty: "medium",
     track: "security",
-    title: "Read-only, never Ready",
-    summary: "A hardened container that can no longer write the one file it needs.",
+    title: "Running, never Ready",
+    summary: "Both Pods are Running but neither becomes Ready.",
     brief:
-      "Security turned on read-only root filesystems for `agent` yesterday. Since then both `agent` Pods are Running but show `0/1` under READY, and `kubectl rollout status deploy/agent` never finishes. The read-only root filesystem must stay on, and so must the readiness probe.",
+      "Since yesterday both `agent` Pods are Running but show `0/1` under READY, and the rollout never finishes. The read-only root filesystem must stay on, and so must the readiness probe.",
     minutes: 7,
     concepts: ["securityContext", "readOnlyRootFilesystem", "emptyDir", "Readiness probe"],
     setup: (c) =>
@@ -151,7 +156,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             const ct = s?.containers.find((k) => k.name === "agent");
             return scOf(ct).readOnlyRootFilesystem === true && JSON.stringify(ct?.readinessProbe?.exec?.command) === JSON.stringify(["cat", "/tmp/heartbeat"]) && writableAt(s, ct, "/tmp");
           }),
-        hint: "kubectl logs deploy/agent shows what the app fails to write, and where. A read-only root filesystem still allows writes to volumes mounted on top of it.",
+        hints: [
+          "The Pods are Running but never Ready, so the readiness check fails while the app is alive. Look at what the check does, and at what the app is meant to produce for it.",
+          "`kubectl describe pods -l app=agent` shows the failing probe. `kubectl logs deploy/agent` shows what the app complains about.",
+          "The probe reads `/tmp/heartbeat` and fails with `No such file`. The app logs `can't create /tmp/heartbeat: Read-only file system`. The root filesystem is read-only, so the app can't write the file the probe wants.",
+          "Keep the root filesystem read-only and give the app somewhere writable. Mount a volume at `/tmp`: an `emptyDir` is enough for scratch files.",
+        ],
         solution: { yaml: AGENT_FIXED },
       },
     ],
@@ -162,9 +172,9 @@ export const SECURITY_CHALLENGES: Challenge[] = [
     difficulty: "medium",
     track: "security",
     title: "Nodes are forbidden",
-    summary: "RBAC that grants Node access in a namespace, where Nodes don't live.",
+    summary: "A report that fails with `nodes is forbidden`.",
     brief:
-      "The capacity report runs as ServiceAccount `capacity-report` in namespace `monitoring`. It fails with `nodes is forbidden: User \"system:serviceaccount:monitoring:capacity-report\" cannot list resource \"nodes\" in API group \"\" at the cluster scope`, even though someone created a Role and a RoleBinding for it in `monitoring` last week. It needs to read Nodes and nothing more: no cluster-admin, no changes to Nodes, no Secrets or Pods.",
+      "The capacity report runs as ServiceAccount `capacity-report` in namespace `monitoring`. It fails with `nodes is forbidden: User \"system:serviceaccount:monitoring:capacity-report\" cannot list resource \"nodes\" in API group \"\" at the cluster scope`. It needs to read Nodes and nothing more: no cluster-admin, no changes to Nodes, no Secrets or Pods.",
     minutes: 7,
     concepts: ["RBAC", "ClusterRole", "ClusterRoleBinding", "kubectl auth can-i"],
     setup: (c) => {
@@ -196,7 +206,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             !can(c, who, "list", "pods", "kube-system")
           );
         },
-        hint: "Nodes aren't in any namespace, so a Role (and a RoleBinding) can never grant access to them. Which RBAC objects work at the cluster scope?",
+        hints: [
+          "The Role and the RoleBinding exist and look right, and access is still denied. Think about where Nodes live. Some objects belong to a namespace and some don't.",
+          "`kubectl api-resources` has a NAMESPACED column. `kubectl auth can-i list nodes --as=system:serviceaccount:monitoring:capacity-report` asks the API server directly.",
+          "`nodes` shows `false` under NAMESPACED, and the answer to can-i is `no`. A Role sets permissions within one namespace, so a Role on `nodes` can never apply. The RBAC docs say a ClusterRole is the one to use to define permissions on cluster-scoped resources.",
+          "Grant access with the cluster-wide pair: a ClusterRole with the read verbs on `nodes`, and a ClusterRoleBinding that binds it to the ServiceAccount, with its namespace. Keep it to get, list and watch.",
+        ],
         solution: {
           commands: [
             "kubectl create clusterrole node-reader --verb=get,list,watch --resource=nodes",
@@ -208,13 +223,13 @@ export const SECURITY_CHALLENGES: Challenge[] = [
   },
   {
     slug: "hardening-rollout",
-    start: ["kubectl get all -n shop", "kubectl get networkpolicy -n shop"],
+    start: ["kubectl get all -n shop", "kubectl get networkpolicy -n shop", "kubectl exec deploy/frontend -- wget -qO- --timeout=2 http://shop.shop"],
     difficulty: "hard",
     track: "security",
-    title: "Hardened into an outage",
-    summary: "A weekend security hardening change that broke three things at once.",
+    title: "Three things broke on Monday",
+    summary: "A storefront that times out, a pipeline that is Forbidden and a Pod that won't start.",
     brief:
-      "**Pager, Monday 09:12: shop namespace.** The security hardening change went out over the weekend: default-deny NetworkPolicies with an allow rule per app, non-root everywhere, and tighter CI access. Since then:\n\n- The storefront is unreachable. This times out:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://shop.shop\n```\n\n- The CI pipeline, running as ServiceAccount `ci` in `shop`, fails with `deployments.apps \"shop\" is forbidden: User \"system:serviceaccount:shop:ci\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"shop\"`.\n- The `audit` Pod never starts.\n\nKeep the hardening: the `default-deny` policy stays and only `shop` may receive traffic, `audit` keeps `runAsNonRoot`, and CI gets no cluster-admin, no delete and no Secrets.",
+      "**Pager, Monday 09:12: shop namespace.** A security hardening change went out over the weekend. Since then:\n\n- The storefront is unreachable: a request from a frontend Pod to `http://shop.shop` times out.\n- The CI pipeline, running as ServiceAccount `ci` in `shop`, fails with `deployments.apps \"shop\" is forbidden: User \"system:serviceaccount:shop:ci\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"shop\"`.\n- The `audit` Pod never starts.\n\nKeep the hardening: the `default-deny` policy stays and only `shop` may receive traffic, `audit` keeps `runAsNonRoot`, and CI gets no cluster-admin, no delete and no Secrets.",
     minutes: 12,
     concepts: ["NetworkPolicy", "RBAC", "API groups", "runAsNonRoot"],
     setup: (c) => {
@@ -264,7 +279,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             !connectionAllowed(c, from, fakePod({ app: "audit" }, "shop"), 80)
           );
         },
-        hint: "A timeout, not a refusal, usually means a NetworkPolicy dropped the packets. kubectl describe networkpolicy -n shop: which Pods does each policy select? Compare with kubectl get pods -n shop --show-labels.",
+        hints: [
+          "A timeout, not a refusal: the packets are dropped before they reach the app. Something in the namespace decides which Pods may receive traffic.",
+          "`kubectl describe networkpolicy -n shop` shows what each policy selects. `kubectl get pods -n shop --show-labels` shows the labels the Pods carry.",
+          "`allow-shop` selects `app=storefront` and lets port 80 in, but the Pods are labelled `app=shop`. Nothing allows them, and `default-deny` drops everything else.",
+          "Leave `default-deny` alone. Correct the selector of the allow policy so it matches the Pods that should be reachable. The `audit` Pods stay closed.",
+        ],
         solution: { commands: [`kubectl patch networkpolicy allow-shop -n shop -p '{"spec":{"podSelector":{"matchLabels":{"app":"shop"}}}}'`] },
       },
       {
@@ -281,27 +301,37 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             !can(c, who, "patch", "deployments", "default", "apps")
           );
         },
-        hint: "kubectl auth can-i patch deployments.apps -n shop --as=system:serviceaccount:shop:ci, then read the ci-deployer Role closely. Which API group are Deployments in? (kubectl api-resources)",
+        hints: [
+          "CI is denied a verb on a resource it should be allowed to use. Ask the API server what it says, then read the rule that was meant to grant it.",
+          "`kubectl auth can-i patch deployments.apps -n shop --as=system:serviceaccount:shop:ci` asks the API server. `kubectl describe role ci-deployer -n shop` shows the rule.",
+          "The answer is `no`. The rule lists `deployments` with no group after it, which means the core API group. Deployments live in the `apps` group, and kubectl would print that as `deployments.apps`. The binding is fine, but the rule matches nothing CI needs.",
+          "Change the rule's API group to the one Deployments are in. Keep the verbs as they are, then check that delete and reading Secrets are still refused.",
+        ],
         solution: { commands: [`kubectl patch role ci-deployer -n shop --type=json -p '[{"op":"replace","path":"/rules/0/apiGroups","value":["apps"]}]'`] },
       },
       {
         title: "audit running as non-root",
         body: "The `audit` Pod is Running and Ready, with `runAsNonRoot` still in force and a non-zero UID.",
         check: (x) => allPods(x.cluster, "audit", "shop", 1, nonRootUser),
-        hint: "kubectl describe pod -n shop -l app=audit. The Pod asks for non-root, but something more specific overrides the user it runs as.",
+        hints: [
+          "The `audit` Pod isn't running. Read the kubelet's last warning about it.",
+          "`kubectl describe pods -n shop -l app=audit` shows the warning in the Events.",
+          "The warning says `container's runAsUser breaks non-root policy`. The Pod sets `runAsNonRoot: true`, and the audit container sets `runAsUser: 0` itself. The Kubernetes docs say a value in the container's securityContext takes precedence over the Pod's, and 0 is root.",
+          "Keep `runAsNonRoot`. Change the container's `runAsUser` to a non-zero UID.",
+        ],
         solution: { commands: [`kubectl patch deployment audit -n shop -p '{"spec":{"template":{"spec":{"containers":[{"name":"audit","securityContext":{"runAsUser":1000}}]}}}}'`] },
       },
     ],
   },
   {
     slug: "payments-onboarding",
-    start: ["kubectl get all -n payments", "kubectl get rolebindings -A"],
+    start: ["kubectl get all -n payments", "kubectl get rolebindings -A", "kubectl exec deploy/frontend -- wget -qO- --timeout=2 http://payments-api.payments"],
     difficulty: "hard",
     track: "security",
     title: "The new team can't launch",
-    summary: "An onboarding script that set a new namespace up wrong in three places.",
+    summary: "A new team is blocked: a Forbidden error, a stuck Pod and failing requests.",
     brief:
-      "**Pager: payments launch blocked.** The onboarding script for the new `payments` team ran yesterday. This morning:\n\n- Alice (user `alice`) gets `Error from server (Forbidden): deployments.apps is forbidden: User \"alice\" cannot list resource \"deployments\" in API group \"apps\" in the namespace \"payments\"`.\n- The `payments-api` Pods have been stuck in ContainerCreating since they were created.\n- This fails from `frontend`:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://payments-api.payments\n```\n\nAlice should have the built-in `edit` access in `payments` and no access anywhere else. `payments-api` must keep reading its database password from the Secret `payments-db`.",
+      "**Pager: payments launch blocked.** The `payments` namespace was set up yesterday. This morning:\n\n- Alice (user `alice`) gets `Error from server (Forbidden): deployments.apps is forbidden: User \"alice\" cannot list resource \"deployments\" in API group \"apps\" in the namespace \"payments\"`.\n- The `payments-api` Pods have been stuck in ContainerCreating since they were created.\n- Requests from `frontend` to `http://payments-api.payments` fail.\n\nAlice should have the built-in `edit` access in `payments` and no access anywhere else. `payments-api` must keep reading its database password from the Secret `payments-db`.",
     minutes: 12,
     concepts: ["RoleBinding", "Namespaces", "Secret volume", "FailedMount", "targetPort"],
     setup: (c) => {
@@ -337,7 +367,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             !can(c, "alice", "list", "nodes")
           );
         },
-        hint: "kubectl get rolebindings -A: a RoleBinding only grants access in the namespace it lives in. Where is Alice's?",
+        hints: [
+          "Alice is refused in a namespace where she should have access. Access is granted by a binding, and a binding lives in one namespace. Find where hers is.",
+          "`kubectl get rolebindings -A` lists the bindings with their namespaces. `kubectl auth can-i list deployments -n payments --as=alice` asks the API server directly.",
+          "The binding `payments-devs` is in `default`, not `payments`. The RBAC docs say a RoleBinding grants permissions within a specific namespace, so it gives Alice `edit` in the wrong place.",
+          "Create the binding in `payments` and remove the stray one in `default`, so Alice has no access there. Bind the `edit` ClusterRole, as the brief asks.",
+        ],
         solution: { commands: ["kubectl delete rolebinding payments-devs -n default", "kubectl create rolebinding payments-devs --clusterrole=edit --user=alice -n payments"] },
       },
       {
@@ -348,14 +383,24 @@ export const SECURITY_CHALLENGES: Challenge[] = [
           const s = obj<{ data?: Record<string, string> }>(c, "Secret", "payments-db", "payments");
           return s?.data?.password === btoa(PAYMENTS_DB_PASSWORD) && allPods(c, "payments-api", "payments", 2, (sp) => !!sp?.volumes?.some((v) => v.secret?.secretName === "payments-db"));
         },
-        hint: "kubectl describe pod -n payments: the Events name what the kubelet can't mount. A Pod can only use Secrets from its own namespace. kubectl get secrets -A.",
+        hints: [
+          "The Pods have a Node but no container yet. Read what the kubelet reports against them.",
+          "`kubectl describe pods -n payments` shows the Events. `kubectl get secrets -A` shows where Secrets exist.",
+          "The Event says `MountVolume.SetUp failed for volume \"db\" : secret \"payments-db\" not found`. The Secret exists, but in `default`, and the Pods run in `payments`.",
+          "Create a Secret with the same name and the same `password` value in `payments`. To read the value from the original, `kubectl get secret payments-db -o yaml` shows it base64-encoded.",
+        ],
         solution: { commands: [`kubectl create secret generic payments-db -n payments --from-literal=password=${PAYMENTS_DB_PASSWORD}`] },
       },
       {
         title: "frontend reaches payments-api",
         body: "`http://payments-api.payments` answers from `frontend`: the Service sends traffic to both `payments-api` Pods, on the port nginx listens on.",
         check: (x) => endpointCount(x.cluster, "payments-api", "payments") === 2 && forwardsTo(x.cluster, "payments-api", "payments", 80, 80),
-        hint: "Once the Pods are up, run the wget again. Compare the Service's TargetPort (kubectl describe svc -n payments) with the port the container listens on.",
+        hints: [
+          "Once the Pods run, a request from `frontend` still fails. Look at what the failure says, then at how the Service connects to the Pods.",
+          "`kubectl exec deploy/frontend -- wget -qO- --timeout=2 http://payments-api.payments` repeats the request. `kubectl describe svc payments-api -n payments` shows where the Service forwards.",
+          "`Connection refused` means the request arrived and nothing was listening on that port. The Service forwards to `TargetPort: 8080/TCP`, and the Pods' container port is `80/TCP`, where nginx listens.",
+          "Change the Service's `targetPort` to the port nginx listens on. The Service's own port can stay as it is.",
+        ],
         solution: { commands: [`kubectl patch service payments-api -n payments --type=json -p '[{"op":"replace","path":"/spec/ports/0/targetPort","value":80}]'`] },
       },
     ],
@@ -366,9 +411,9 @@ export const SECURITY_CHALLENGES: Challenge[] = [
     difficulty: "hard",
     track: "security",
     title: "After the security audit",
-    summary: "Least privilege and Secret hygiene, applied a little too quickly.",
+    summary: "Deploys are Forbidden, a Service refuses connections and a Pod never starts.",
     brief:
-      "**Pager: blog down since Friday's audit cleanup.** The auditors replaced `release-bot`'s cluster-admin binding with per-namespace access, moved the comments database password out of a ConfigMap into a Secret, and removed \"unused\" labels. Since then:\n\n- Deploys to `blog` fail with `deployments.apps \"blog\" is forbidden: User \"system:serviceaccount:ops:release-bot\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"blog\": RBAC: role.rbac.authorization.k8s.io \"release\" not found`. Deploys to `shop` still work.\n- `http://blog.blog` refuses connections, though both `blog` Pods are Running.\n- `comments` never starts.\n\nDon't undo the audit: no cluster-admin and nothing cluster-wide for `release-bot`, and the comments password stays in the Secret `blog-db`.",
+      "**Pager: blog down since Friday's audit cleanup.** Since then:\n\n- Deploys to `blog` fail with `deployments.apps \"blog\" is forbidden: User \"system:serviceaccount:ops:release-bot\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"blog\"`. Deploys to `shop` still work.\n- `http://blog.blog` refuses connections, though both `blog` Pods are Running.\n- `comments` never starts.\n\nDon't undo the audit: no cluster-admin and nothing cluster-wide for `release-bot`, and the comments password stays in the Secret `blog-db`.",
     minutes: 12,
     concepts: ["RoleBinding", "roleRef", "ClusterRole", "Service selector", "secretKeyRef"],
     setup: (c) => {
@@ -414,14 +459,24 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             !can(c, who, "patch", "deployments", "ops", "apps")
           );
         },
-        hint: "Compare the RoleBinding release-bot in blog with the one in shop (kubectl get rolebinding release-bot -n shop -o yaml). A binding's roleRef can't be changed after it's created.",
+        hints: [
+          "Deploys to `blog` are refused, but the same bot deploys to `shop` fine. Compare the two namespaces side by side.",
+          "`kubectl get rolebindings -A` lists both bindings. `kubectl get rolebinding release-bot -n blog -o yaml` and the same with `-n shop` show what each one refers to.",
+          "In `shop` the binding refers to `ClusterRole/release`, and in `blog` to `Role/release`. `kubectl get role -n blog` finds no Role there, so the binding points at nothing and grants nothing.",
+          "The RBAC docs say you can't change a binding's roleRef: remove the binding and create a replacement. Recreate the one in `blog` so it refers to the ClusterRole. A RoleBinding that refers to a ClusterRole still grants access only inside `blog`.",
+        ],
         solution: { commands: ["kubectl delete rolebinding release-bot -n blog", "kubectl create rolebinding release-bot --clusterrole=release --serviceaccount=ops:release-bot -n blog"] },
       },
       {
         title: "blog serving behind its Service",
         body: "Both `blog` Pods are Ready and receive traffic from the `blog` Service.",
         check: (x) => readyCount(x.cluster, "blog", "blog") === 2 && endpointCount(x.cluster, "blog", "blog") === 2,
-        hint: "kubectl get endpoints -n blog is empty. Compare the Service's selector with kubectl get pods -n blog --show-labels.",
+        hints: [
+          "The `blog` Pods are healthy, yet nothing gets traffic. Look at what sits between a visitor and the Pods, and whether it lists any backends.",
+          "`kubectl get endpoints -n blog` shows the backends. `kubectl describe svc blog -n blog` shows what the Service selects, and `kubectl get pods -n blog --show-labels` shows the Pods' labels.",
+          "ENDPOINTS is `<none>`. The Service selects `app=blog,tier=web`, but the Pods only have `app=blog`. The cleanup removed the `tier` label, so no Pod matches both.",
+          "Make the selector and the labels agree. Dropping the stale `tier` entry from the Service's selector is the smaller change.",
+        ],
         solution: { commands: [`kubectl patch service blog -n blog -p '{"spec":{"selector":{"tier":null}}}'`] },
       },
       {
@@ -433,7 +488,12 @@ export const SECURITY_CHALLENGES: Challenge[] = [
             const pw = env.filter((e) => e.name === "DB_PASSWORD");
             return pw.length === 1 && pw[0].value === undefined && pw[0].valueFrom?.secretKeyRef?.name === "blog-db";
           }),
-        hint: "kubectl describe pod -n blog -l app=comments: the Warning says exactly what's missing. Then kubectl describe secret blog-db -n blog lists the keys it really has.",
+        hints: [
+          "The `comments` Pod hasn't started a container. Read the kubelet's last warning about it.",
+          "`kubectl describe pods -n blog -l app=comments` shows the warning. `kubectl describe secret blog-db -n blog` lists the keys the Secret has.",
+          "The warning says `couldn't find key db-password in Secret blog/blog-db`. The Secret has a key named `password`. The Deployment refers to the old key name.",
+          "Change the key name in the Deployment's `secretKeyRef`. The value keeps coming from the Secret.",
+        ],
         solution: { commands: [`kubectl patch deployment comments -n blog --type=json -p '[{"op":"replace","path":"/spec/template/spec/containers/0/env/0/valueFrom/secretKeyRef/key","value":"password"}]'`] },
       },
     ],

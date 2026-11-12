@@ -604,7 +604,7 @@ export const CHALLENGES: ChallengeMeta[] = [
   {
     "slug": "typo-image",
     "title": "The site is down",
-    "summary": "A Deployment that never became ready after a small change.",
+    "summary": "None of the `web` Pods are running and the site is down.",
     "minutes": 4,
     "concepts": [
       "ImagePullBackOff",
@@ -617,12 +617,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "Someone \"just bumped the nginx tag\" on the `web` Deployment an hour ago, and the site has been down since. None of the `web` Pods are Running. Get it serving again on a real nginx image."
+    "brief": "The site has been down for an hour: none of the `web` Pods are Running. The Deployment was changed shortly before it went down. Get it serving again; `web` must still run nginx."
   },
   {
     "slug": "service-selector",
     "title": "Connection refused",
-    "summary": "Healthy Pods, a Service in front of them, and no traffic getting through.",
+    "summary": "Calls to a service fail although everything looks healthy.",
     "minutes": 4,
     "concepts": [
       "Service",
@@ -636,12 +636,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "`curl http://api` fails with `Failed to connect to api port 80`, but both `api` Pods are Running and Ready. Nobody has touched the Deployment. Make the Service work."
+    "brief": "Calls to the `api` Service fail with `Failed to connect to api port 80`, but both `api` Pods are Running and Ready. Nobody has touched the Deployment. Make the Service work."
   },
   {
     "slug": "missing-configmap",
     "title": "Stuck before it starts",
-    "summary": "Pods that never get as far as running their container.",
+    "summary": "Pods that are stuck and never start running.",
     "minutes": 5,
     "concepts": [
       "ConfigMap",
@@ -654,7 +654,7 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "The `frontend` Pods have been stuck since someone tidied up \"unused\" ConfigMaps last night. The config they need is a single setting: `API_URL=http://api:8080`."
+    "brief": "The `frontend` Pods have been stuck since last night and none of them is running. The one setting the app needs is `API_URL=http://api:8080`."
   },
   {
     "slug": "postgres-password",
@@ -673,12 +673,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "The `db` Deployment (Postgres) restarts every few seconds. Its password is already stored in the Secret `db-credentials`. Security says the password must come from that Secret, not be written into the Deployment."
+    "brief": "The `db` Deployment (Postgres) restarts every few seconds. The database password lives in the Secret `db-credentials`; Security says it must not be written into the Deployment."
   },
   {
     "slug": "readiness-wrong-port",
-    "title": "Health checks gone wrong",
-    "summary": "Every Pod is Running, none is Ready, and the Service is empty.",
+    "title": "Running, but not serving",
+    "summary": "Every Pod is Running, none shows Ready, and traffic goes nowhere.",
     "minutes": 6,
     "concepts": [
       "Readiness probe",
@@ -691,12 +691,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "We added health checks to `web` this morning. Since then every Pod shows `0/1` under READY and the `web` Service sends traffic nowhere. nginx itself looks fine in the logs. Keep the readiness probe, but make it correct."
+    "brief": "Since this morning's change to `web`, every Pod shows `0/1` under READY and the `web` Service sends traffic nowhere. nginx itself looks fine in the logs. The Deployment must keep a readiness probe."
   },
   {
     "slug": "oversized-request",
     "title": "Pending forever",
-    "summary": "A small app that the scheduler can't find room for.",
+    "summary": "A small app that has been Pending for an hour.",
     "minutes": 5,
     "concepts": [
       "Resource requests",
@@ -709,12 +709,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "`report` has been Pending for an hour. It's a small reporting app that idles at about 50m CPU and 20Mi of memory. Nobody knows who sized it."
+    "brief": "`report` has been Pending for an hour. It's a small reporting app that idles at about 50m CPU and 20Mi of memory."
   },
   {
     "slug": "wrong-storageclass",
-    "title": "Copied from another cluster",
-    "summary": "A Pod waiting on a claim that can never be provisioned.",
+    "title": "The cache won't start",
+    "summary": "A cache Pod that has been Pending since it was deployed.",
     "minutes": 7,
     "concepts": [
       "PersistentVolumeClaim",
@@ -728,12 +728,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "`cache` (Redis) is Pending. Its manifests were copied from the production cluster, which has a StorageClass called `fast-ssd`. This cluster only has the default one."
+    "brief": "`cache` (Redis) has been Pending since it was deployed here yesterday. Its data must stay on a persistent volume."
   },
   {
     "slug": "forbidden-sa",
     "title": "The pipeline is Forbidden",
-    "summary": "RBAC that looks right, for a ServiceAccount that still can't do its job.",
+    "summary": "A deploy pipeline whose runs all fail with Forbidden.",
     "minutes": 7,
     "concepts": [
       "RBAC",
@@ -747,12 +747,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "The deploy pipeline runs as ServiceAccount `deployer` in namespace `apps`. Every run fails with `deployments.apps \"web\" is forbidden: User \"system:serviceaccount:apps:deployer\" cannot patch resource \"deployments\"`. (That `system:serviceaccount:apps:deployer` string is how Kubernetes names the ServiceAccount `deployer` in namespace `apps`.) A Role and a RoleBinding were set up for it last week. It must not get more access than that Role gives."
+    "brief": "The deploy pipeline runs as ServiceAccount `deployer` in namespace `apps`. Every run fails with `deployments.apps \"web\" is forbidden: User \"system:serviceaccount:apps:deployer\" cannot patch resource \"deployments\"`. (That `system:serviceaccount:apps:deployer` string is how Kubernetes names the ServiceAccount `deployer` in namespace `apps`.) It must be able to patch Deployments in `apps`, and must not get more access than that."
   },
   {
     "slug": "egress-dns",
-    "title": "Locked down too far",
-    "summary": "An egress policy that blocks more than it meant to.",
+    "title": "Frontend can't reach backend",
+    "summary": "A request from frontend to backend has failed since yesterday.",
     "minutes": 10,
     "concepts": [
       "NetworkPolicy",
@@ -766,12 +766,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "Security added an egress NetworkPolicy for `frontend` yesterday. Since then frontend can't reach backend. This fails:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://backend\n```\n\nFrontend must stay locked down (it may not reach the internet), but it has to reach backend by name."
+    "brief": "Since yesterday's security change, a request from a frontend Pod to `http://backend` fails. Frontend must stay locked down (it may not reach the internet), but it has to reach backend."
   },
   {
     "slug": "after-maintenance",
-    "title": "Nothing schedules after maintenance",
-    "summary": "Two Nodes left half-finished by last night's maintenance.",
+    "title": "Nothing new will start",
+    "summary": "A Deployment stuck Pending, and no new Pod lands anywhere.",
     "minutes": 8,
     "concepts": [
       "Taints",
@@ -785,7 +785,7 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "Last night's Node maintenance is over, but `web` is stuck Pending and nothing new gets scheduled anywhere. The on-call engineer went home before finishing the checklist. Don't work around it with tolerations: put the workers back the way they were."
+    "brief": "Since last night `web` has been stuck Pending, and nothing new gets scheduled on either worker. Don't give `web` special treatment to get around it."
   },
   {
     "slug": "secret-wrong-key",
@@ -861,7 +861,7 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "The `cleanup` CronJob is meant to delete expired sessions every 5 minutes. It went out ten minutes ago, `kubectl get jobs` is still empty, and the sessions table keeps growing. Make it run on its intended schedule."
+    "brief": "The `cleanup` CronJob is meant to delete expired sessions every 5 minutes. It went out ten minutes ago, no Job has been created yet, and the sessions table keeps growing. Make it run on its intended schedule."
   },
   {
     "slug": "cache-emptydir",
@@ -908,7 +908,7 @@ export const CHALLENGES: ChallengeMeta[] = [
   {
     "slug": "configmap-subpath",
     "title": "Yesterday's page",
-    "summary": "A ConfigMap edit that the site never picked up.",
+    "summary": "An edited page that the site never shows.",
     "minutes": 10,
     "concepts": [
       "ConfigMap volumes",
@@ -930,7 +930,7 @@ export const CHALLENGES: ChallengeMeta[] = [
   {
     "slug": "nodeselector-typo",
     "title": "Waiting for the fast disk",
-    "summary": "A Deployment pinned to a Node that doesn't seem to exist.",
+    "summary": "Two Pods that have been Pending since this morning's deploy.",
     "minutes": 4,
     "concepts": [
       "nodeSelector",
@@ -944,12 +944,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "`search` has to run on the Node with the SSD, which is labelled for it. Both `search` Pods have been Pending since it was deployed this morning. Leave the Node labels alone: other teams schedule by them."
+    "brief": "`search` has to run on the Node with the SSD. Both `search` Pods have been Pending since it was deployed this morning. Other teams rely on the Nodes exactly as they are: leave them alone."
   },
   {
     "slug": "ingress-ignored",
     "title": "404 at the front door",
-    "summary": "An Ingress that the cluster's controller never picks up.",
+    "summary": "Healthy Pods, but the public URL returns 404.",
     "minutes": 4,
     "concepts": [
       "Ingress",
@@ -963,12 +963,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "The `shop` Deployment, Service and Ingress were copied over from the old cluster yesterday. The Pods are Ready and the Service has endpoints, but from outside:\n\n```bash\ncurl http://shop.example/\n```\n\nreturns ingress-nginx's `404 Not Found` page. Customers must reach `shop` at `http://shop.example/`."
+    "brief": "The `shop` Deployment, Service and Ingress went in yesterday. The Pods are Ready and the Service has endpoints, but from outside, a request to `http://shop.example/` returns a `404 Not Found` page. Customers must reach `shop` at `http://shop.example/`."
   },
   {
     "slug": "allow-frontend",
-    "title": "Lockdown broke checkout",
-    "summary": "A default-deny policy did its job a little too well.",
+    "title": "Checkout calls time out",
+    "summary": "The frontend's calls to the API have timed out since this morning.",
     "minutes": 7,
     "concepts": [
       "NetworkPolicy",
@@ -982,12 +982,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "Security rolled out `default-deny-ingress` this morning, and since then the frontend's calls to the API time out:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://api\n```\n\nThe `default-deny-ingress` policy must stay exactly as it is. `api` must accept traffic from `frontend` and from nothing else."
+    "brief": "Since this morning's security rollout, the frontend's calls to the API time out. Don't remove or edit anything security put in place. `api` must accept traffic from `frontend` and from nothing else."
   },
   {
     "slug": "daemonset-tainted-node",
     "title": "No logs from worker-2",
-    "summary": "A DaemonSet that quietly skips one Node.",
+    "summary": "The logging dashboard has nothing from one of the workers.",
     "minutes": 6,
     "concepts": [
       "DaemonSet",
@@ -1001,7 +1001,7 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "`log-agent` is supposed to run on every worker Node, but the logging dashboard has had nothing from `worker-2` since it was set aside for GPU jobs last week. Whatever was done to `worker-2` must stay: ordinary apps must still keep off it."
+    "brief": "`log-agent` is supposed to run on every worker Node, but the logging dashboard has had nothing from `worker-2` for a week. `worker-2` is reserved for GPU jobs, and ordinary apps must still keep off it."
   },
   {
     "slug": "hpa-stuck",
@@ -1025,7 +1025,7 @@ export const CHALLENGES: ChallengeMeta[] = [
   {
     "slug": "anti-affinity-third-replica",
     "title": "The third replica",
-    "summary": "Scaling up hits a placement rule that can't be met.",
+    "summary": "Scaled from 2 to 3 replicas, and the new Pod stays Pending.",
     "minutes": 12,
     "concepts": [
       "Pod anti-affinity",
@@ -1044,7 +1044,7 @@ export const CHALLENGES: ChallengeMeta[] = [
   {
     "slug": "storefront-gateway",
     "title": "The shop won't load",
-    "summary": "An Ingress, a Service and a locked-down namespace, and no page at the end of it.",
+    "summary": "A new storefront that nobody outside can load.",
     "minutes": 14,
     "concepts": [
       "Ingress",
@@ -1059,12 +1059,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "The new `storefront` in namespace `shop` went live this morning and nobody outside can load it:\n\n```bash\ncurl http://shop.example/\n```\n\nThe Pods are Ready and look healthy in their logs. `shop` is a locked-down namespace: its `default-deny-ingress` policy must stay exactly as it is, and the storefront Pods may only accept traffic from the ingress controller, not from other Pods in `shop` or anywhere else in the cluster."
+    "brief": "The new `storefront` in namespace `shop` went live this morning and nobody outside can load it: a request to `http://shop.example/` fails. The Pods are Ready and look healthy in their logs. `shop` is a locked-down namespace: its `default-deny-ingress` policy must stay exactly as it is, and the storefront Pods may only accept traffic from the ingress controller, not from other Pods in `shop` or anywhere else in the cluster."
   },
   {
     "slug": "run-as-nonroot",
-    "title": "Non-root, non-starting",
-    "summary": "A new non-root policy, and Pods that never get as far as starting.",
+    "title": "Pods that won't start",
+    "summary": "Neither Pod of a Deployment has started since this morning's change.",
     "minutes": 4,
     "concepts": [
       "securityContext",
@@ -1078,12 +1078,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "easy",
-    "brief": "The platform team now requires every workload to run as a non-root user, and added `runAsNonRoot: true` to the `worker` Deployment this morning. Since then neither `worker` Pod has started. `worker` is a plain busybox loop that doesn't care which user it runs as. Keep the policy: removing `runAsNonRoot` or setting it to `false` doesn't count."
+    "brief": "Since this morning's change neither `worker` Pod has started. `worker` is a plain busybox loop that doesn't care which user it runs as. The Deployment must keep `runAsNonRoot: true`: removing it or setting it to `false` doesn't count."
   },
   {
     "slug": "readonly-tmp",
-    "title": "Read-only, never Ready",
-    "summary": "A hardened container that can no longer write the one file it needs.",
+    "title": "Running, never Ready",
+    "summary": "Both Pods are Running but neither becomes Ready.",
     "minutes": 7,
     "concepts": [
       "securityContext",
@@ -1098,12 +1098,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "Security turned on read-only root filesystems for `agent` yesterday. Since then both `agent` Pods are Running but show `0/1` under READY, and `kubectl rollout status deploy/agent` never finishes. The read-only root filesystem must stay on, and so must the readiness probe."
+    "brief": "Since yesterday both `agent` Pods are Running but show `0/1` under READY, and the rollout never finishes. The read-only root filesystem must stay on, and so must the readiness probe."
   },
   {
     "slug": "node-reader",
     "title": "Nodes are forbidden",
-    "summary": "RBAC that grants Node access in a namespace, where Nodes don't live.",
+    "summary": "A report that fails with `nodes is forbidden`.",
     "minutes": 7,
     "concepts": [
       "RBAC",
@@ -1118,12 +1118,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "medium",
-    "brief": "The capacity report runs as ServiceAccount `capacity-report` in namespace `monitoring`. It fails with `nodes is forbidden: User \"system:serviceaccount:monitoring:capacity-report\" cannot list resource \"nodes\" in API group \"\" at the cluster scope`, even though someone created a Role and a RoleBinding for it in `monitoring` last week. It needs to read Nodes and nothing more: no cluster-admin, no changes to Nodes, no Secrets or Pods."
+    "brief": "The capacity report runs as ServiceAccount `capacity-report` in namespace `monitoring`. It fails with `nodes is forbidden: User \"system:serviceaccount:monitoring:capacity-report\" cannot list resource \"nodes\" in API group \"\" at the cluster scope`. It needs to read Nodes and nothing more: no cluster-admin, no changes to Nodes, no Secrets or Pods."
   },
   {
     "slug": "hardening-rollout",
-    "title": "Hardened into an outage",
-    "summary": "A weekend security hardening change that broke three things at once.",
+    "title": "Three things broke on Monday",
+    "summary": "A storefront that times out, a pipeline that is Forbidden and a Pod that won't start.",
     "minutes": 12,
     "concepts": [
       "NetworkPolicy",
@@ -1144,12 +1144,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "**Pager, Monday 09:12: shop namespace.** The security hardening change went out over the weekend: default-deny NetworkPolicies with an allow rule per app, non-root everywhere, and tighter CI access. Since then:\n\n- The storefront is unreachable. This times out:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://shop.shop\n```\n\n- The CI pipeline, running as ServiceAccount `ci` in `shop`, fails with `deployments.apps \"shop\" is forbidden: User \"system:serviceaccount:shop:ci\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"shop\"`.\n- The `audit` Pod never starts.\n\nKeep the hardening: the `default-deny` policy stays and only `shop` may receive traffic, `audit` keeps `runAsNonRoot`, and CI gets no cluster-admin, no delete and no Secrets."
+    "brief": "**Pager, Monday 09:12: shop namespace.** A security hardening change went out over the weekend. Since then:\n\n- The storefront is unreachable: a request from a frontend Pod to `http://shop.shop` times out.\n- The CI pipeline, running as ServiceAccount `ci` in `shop`, fails with `deployments.apps \"shop\" is forbidden: User \"system:serviceaccount:shop:ci\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"shop\"`.\n- The `audit` Pod never starts.\n\nKeep the hardening: the `default-deny` policy stays and only `shop` may receive traffic, `audit` keeps `runAsNonRoot`, and CI gets no cluster-admin, no delete and no Secrets."
   },
   {
     "slug": "payments-onboarding",
     "title": "The new team can't launch",
-    "summary": "An onboarding script that set a new namespace up wrong in three places.",
+    "summary": "A new team is blocked: a Forbidden error, a stuck Pod and failing requests.",
     "minutes": 12,
     "concepts": [
       "RoleBinding",
@@ -1171,12 +1171,12 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "**Pager: payments launch blocked.** The onboarding script for the new `payments` team ran yesterday. This morning:\n\n- Alice (user `alice`) gets `Error from server (Forbidden): deployments.apps is forbidden: User \"alice\" cannot list resource \"deployments\" in API group \"apps\" in the namespace \"payments\"`.\n- The `payments-api` Pods have been stuck in ContainerCreating since they were created.\n- This fails from `frontend`:\n\n```bash\nkubectl exec deploy/frontend -- wget -qO- --timeout=2 http://payments-api.payments\n```\n\nAlice should have the built-in `edit` access in `payments` and no access anywhere else. `payments-api` must keep reading its database password from the Secret `payments-db`."
+    "brief": "**Pager: payments launch blocked.** The `payments` namespace was set up yesterday. This morning:\n\n- Alice (user `alice`) gets `Error from server (Forbidden): deployments.apps is forbidden: User \"alice\" cannot list resource \"deployments\" in API group \"apps\" in the namespace \"payments\"`.\n- The `payments-api` Pods have been stuck in ContainerCreating since they were created.\n- Requests from `frontend` to `http://payments-api.payments` fail.\n\nAlice should have the built-in `edit` access in `payments` and no access anywhere else. `payments-api` must keep reading its database password from the Secret `payments-db`."
   },
   {
     "slug": "audit-cleanup",
     "title": "After the security audit",
-    "summary": "Least privilege and Secret hygiene, applied a little too quickly.",
+    "summary": "Deploys are Forbidden, a Service refuses connections and a Pod never starts.",
     "minutes": 12,
     "concepts": [
       "RoleBinding",
@@ -1198,7 +1198,7 @@ export const CHALLENGES: ChallengeMeta[] = [
       }
     ],
     "difficulty": "hard",
-    "brief": "**Pager: blog down since Friday's audit cleanup.** The auditors replaced `release-bot`'s cluster-admin binding with per-namespace access, moved the comments database password out of a ConfigMap into a Secret, and removed \"unused\" labels. Since then:\n\n- Deploys to `blog` fail with `deployments.apps \"blog\" is forbidden: User \"system:serviceaccount:ops:release-bot\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"blog\": RBAC: role.rbac.authorization.k8s.io \"release\" not found`. Deploys to `shop` still work.\n- `http://blog.blog` refuses connections, though both `blog` Pods are Running.\n- `comments` never starts.\n\nDon't undo the audit: no cluster-admin and nothing cluster-wide for `release-bot`, and the comments password stays in the Secret `blog-db`."
+    "brief": "**Pager: blog down since Friday's audit cleanup.** Since then:\n\n- Deploys to `blog` fail with `deployments.apps \"blog\" is forbidden: User \"system:serviceaccount:ops:release-bot\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"blog\"`. Deploys to `shop` still work.\n- `http://blog.blog` refuses connections, though both `blog` Pods are Running.\n- `comments` never starts.\n\nDon't undo the audit: no cluster-admin and nothing cluster-wide for `release-bot`, and the comments password stays in the Secret `blog-db`."
   }
 ];
 
